@@ -1,0 +1,548 @@
+#!/usr/bin/env python3.6
+#
+# This file is part of rasa-teld.
+#
+# rasa-teld is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# rasa-teld is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with rasa-teld.  If not, see <http://www.gnu.org/licenses/>.
+
+"""Daemon for controlling a Paramount ME via Pyro"""
+
+# pylint: disable=invalid-name
+# pylint: disable=too-many-return-statements
+# pylint: disable=too-few-public-methods
+# pylint: disable=too-many-instance-attributes
+# pylint: disable=no-self-use
+# pylint: disable=too-many-statements
+# pylint: disable=bare-except
+# pylint: disable=too-many-lines
+# pylint: disable=broad-except
+
+import math
+import threading
+import time
+from astropy.coordinates import SkyCoord, FK5
+from astropy.time import Time
+import astropy.units as u
+import Pyro4
+import pythoncom
+import win32com.client
+import pywintypes
+from warwick.observatory.common import (
+    daemons,
+    log,
+    TryLock)
+
+from warwick.observatory.common.daemons import PyroDaemon
+daemons.rasa_telescope = PyroDaemon('telescope_daemon', '127.0.0.1', 9003, 5)
+
+# Set automatically when generating RPM package
+SOFTWARE_VERSION = 'UNKNOWN'
+
+# Delay between status queries (in seconds)
+TELSTAT_QUERY_DELAY = 0.5
+
+# Maximum time to power up and find home (in seconds)
+INITIALIZE_TIMEOUT = 120
+SHUTDOWN_TIMEOUT = 20
+
+J2000 = FK5(equinox=Time(2000, format='jyear', scale='utc'))
+
+# This should be kept in sync with the dictionary in tel
+class CommandStatus:
+    """Numeric return codes"""
+    # General error codes
+    Succeeded = 0
+    Failed = 1
+    Blocked = 2
+
+    CannotCommunicateWithPowerDaemon = 5
+    SerialNotAvailable = 6
+    SerialTimeout = 7
+
+    # Command-specific codes
+    TelescopeNotDisabled = 10
+    TelescopeIsTracking = 11
+    TelescopeNotEnabled = 12
+    TelescopeInitializing = 13
+
+    CoordinatesOutsideLimits = 20
+    SlewAborted = 21
+
+class TelError:
+    NoError = 0
+    Other = 1
+    SerialConnectionFailed = 2
+    SerialTimeout = 3
+    SlewOutsideLimits = 4
+    CommandInProgress = 5
+
+class TelescopeState:
+    Disabled, Initializing, Slewing, Stopped, Tracking = range(5)
+    Names = ['DISABLED', 'INITIALIZING', 'SLEWING', 'STOPPED', 'TRACKING']
+
+class RequestedSlew:
+    NoSlew, Equatorial, Horizon, EquatorialOffsetFirst, EquatorialOffsetSecond, HorizonOffsetFirst, HorizonOffsetSecond = range(7)
+
+    def __init__(self, a, b, type):
+        self.a = a
+        self.b = b
+        self.type = type
+
+def set_mount_power(enabled):
+    """Enable or disable the mount power via the power daemon
+    Return True on success or False on failure
+    """
+    #try:
+    #    with daemons.rasa_power.connect() as power:
+    #        if not power.switch('mount', enabled):
+    #            return False
+    #except Pyro4.errors.CommunicationError:
+    #    toggle = 'enable' if enabled else 'disable'
+    #    log.error('rasa_teld', 'Failed to {} mount power'.format(toggle))
+    #    return false
+    return True
+
+def parse_tel_exception(e):
+    if isinstance(e, pywintypes.com_error):
+        # TODO: Log to database
+        if e.excepinfo and e.excepinfo[2].startswith('Could not open communications port.'):
+            print('Failed to connect to serial port')
+            return TelError.SerialConnectionFailed
+        if e.excepinfo and e.excepinfo[2].startswith('Receive time-out.COMM_TIMEOUT'):
+            print('Serial timeout')
+            return TelError.SerialTimeout
+        if e.excepinfo and e.excepinfo[2].startswith('Limits exceeded.'):
+            print('Requested slew was outside limits')
+            return TelError.SlewOutsideLimits
+        if e.excepinfo and e.excepinfo[2].startswith('Command in progress.'):
+            print('Command in progress')
+            return TelError.CommandInProgress
+
+    print('Unknown exception:')
+    print(e)
+    return TelError.Other
+
+class TelescopeDaemon:
+    """Daemon interface for Paramount subsystems"""
+    def __init__(self):
+        # Only one command may be active at a time (except for stop)
+        self._command_lock = threading.Lock()
+        self._slew_condition = threading.Condition()
+        self._initialize_shutdown_condition = threading.Condition()
+
+        # COM connections to the underlying control software
+        # Must be initialized and used only from the tel thread
+        self._telescope = None
+        self._thesky = None
+
+        # Status code to return from initialization
+        self._initialization_status = CommandStatus.Failed
+
+        self._slew_aborted = False
+        self._slew_outside_limits = False
+
+        self._slew_lock = threading.Lock()
+
+        # Set by client threads to signal telescope init / shutdown
+        self._requested_stop = False
+        self._requested_active = False
+        self._requested_tracking = False
+        self._requested_slew = None
+
+        # Set by tel thread to indicate actual state
+        self._state = TelescopeState.Disabled
+
+        self._current_lock = threading.Lock()
+        self._current_ra = 0
+        self._current_dec = 0
+        self._current_alt = 0
+        self._current_az = 0
+        self._current_tracking = False
+
+        tel_status_thread = threading.Thread(target=self.__poll_tel_status)
+        tel_status_thread.daemon = True
+        tel_status_thread.start()
+
+    def __tel_query_state(self):
+        """Update local copies of state variables from talon shared memory segment"""
+        try:
+            if self._state > TelescopeState.Initializing:
+                with self._current_lock:
+                    # Query new positions from mount
+                    self._telescope.GetRaDec()
+                    self._telescope.GetAzAlt()
+
+                    # Precess JNow coords to J2000
+                    radec_jnow = SkyCoord(self._telescope.dRA * u.hourangle,
+                                          self._telescope.dDec * u.deg,
+                                          frame=FK5(equinox=Time.now()))
+                    radec_j2000 = radec_jnow.transform_to(J2000)
+
+                    self._current_ra = radec_j2000.ra.to(u.rad).value
+                    self._current_dec = radec_j2000.dec.to(u.rad).value
+
+                    self._current_alt = math.radians(self._telescope.dAlt)
+                    self._current_az = math.radians(self._telescope.dAz)
+
+                    if self._state != TelescopeState.Slewing:
+                        if self._telescope.IsTracking:
+                            self._state = TelescopeState.Tracking
+                        else:
+                            self._state = TelescopeState.Stopped
+
+        except Exception as e:
+            parse_tel_exception(e)
+            print('Shutting down mount')
+            self._requested_active = False
+
+    def __tel_initialize_mount(self):
+        print('enabling mount')
+
+        if set_mount_power(True):
+            try:
+                self._state = TelescopeState.Initializing
+                if not self._telescope.IsConnected:
+                    self._telescope.Connect()
+
+                # Home telescope
+                self._telescope.FindHome()
+
+                # Disable tracking
+                self._telescope.SetTracking(0, 1, 0, 0)
+                self._state = TelescopeState.Stopped
+                self._initialization_status = CommandStatus.Succeeded
+            except Exception as e:
+                err = parse_tel_exception(e)
+                if err == TelError.SerialConnectionFailed:
+                    self._initialization_status = CommandStatus.SerialNotAvailable
+                elif err == TelError.SerialTimeout:
+                    self._initialization_status = CommandStatus.SerialTimeout
+                else:
+                    self._initialization_status = CommandStatus.Failed
+
+            if self._initialization_status != CommandStatus.Succeeded:
+                set_mount_power(False)
+                self._requested_active = False
+                self._state = TelescopeState.Disabled
+        else:
+            self._initialization_status = CommandStatus.CannotCommunicateWithPowerDaemon
+
+        with self._initialize_shutdown_condition:
+            self._initialize_shutdown_condition.notify_all()
+
+    def __tel_shutdown_mount(self):
+        print('shutting down mount')
+        try:
+            # Disable tracking and disconnect
+            self._telescope.SetTracking(0, 1, 0, 0)
+            self._thesky.DisconnectTelescope()
+        except Exception as e:
+            parse_tel_exception(e)
+
+        # Power off the mount, ignoring errors
+        set_mount_power(False)
+
+        self._state = TelescopeState.Disabled
+        with self._initialize_shutdown_condition:
+            self._initialize_shutdown_condition.notify_all()
+
+    def __poll_tel_status(self):
+        """Background thread that polls shared memory for the current telescope status"""
+        pythoncom.CoInitialize()
+
+        self._thesky = win32com.client.Dispatch("TheSky6.RASCOMTheSky")
+        self._telescope = win32com.client.Dispatch("TheSky6.RASCOMTele")
+        self._telescope.Asynchronous = True
+
+        while True:
+            if self._state == TelescopeState.Disabled and self._requested_active:
+                self.__tel_initialize_mount()
+
+            if self._state != TelescopeState.Disabled and not self._requested_active:
+                self.__tel_shutdown_mount()
+
+            # The rest of the loop only makes sense if the mount is online
+            if self._state == TelescopeState.Disabled:
+                time.sleep(TELSTAT_QUERY_DELAY)
+                continue
+
+            if self._requested_stop:
+                try:
+                    self._telescope.Abort()
+                    self._slew_aborted = True
+                    self._requested_stop = False
+                except Exception as e:
+                    print('Failed to stop slew')
+                    parse_tel_exception(e)
+                    print('Shutting down mount')
+                    self._requested_active = False
+
+            if self._state == TelescopeState.Slewing:
+                try:
+                    with self._slew_condition:
+                        if self._telescope.IsSlewComplete:
+                            if self._telescope.IsTracking:
+                                self._state = TelescopeState.Tracking
+                            else:
+                                self._state = TelescopeState.Stopped
+                            self._slew_condition.notify_all()
+
+                except Exception as e:
+                    print('Failed to check slew status')
+                    parse_tel_exception(e)
+                    print('Shutting down mount')
+                    self._requested_active = False
+
+            with self._slew_lock:
+                try:
+                    # IsTracking sometimes returns the wrong value, so reset it every tick
+                    # This also acts as a heartbeat check, and will throw if the mount goes offline
+                    self._telescope.SetTracking(1 if self._requested_tracking else 0, 1, 0, 0)
+                except Exception as e:
+                    print('Failed to set tracking')
+                    parse_tel_exception(e)
+                    print('Shutting down mount')
+                    self._requested_active = False
+
+                try:
+                    if self._state != TelescopeState.Slewing and self._requested_slew is not None:
+                        self._slew_aborted = False
+                        self._slew_outside_limits = False
+                        self._state = TelescopeState.Slewing
+                        slew = self._requested_slew
+                        if slew.type == RequestedSlew.Horizon:
+                            alt = math.degrees(slew.a)
+                            az = math.degrees(slew.b)
+                            print('Slew to AltAz', slew.a, slew.b)
+                            self._telescope.SlewToAzAlt(az, alt, "Target")
+                            self._requested_slew = None
+                        elif slew.type == RequestedSlew.HorizonOffsetFirst:
+                            alt = math.degrees(slew.a) * 60
+                            print('Offset by Alt', slew.a)
+                            self._telescope.Jog(math.fabs(alt), "D" if alt < 0 else "U")
+                            slew.type = RequestedSlew.HorizonOffsetSecond
+                        elif slew.type == RequestedSlew.HorizonOffsetSecond:
+                            az = math.degrees(slew.b) * 60
+                            print('Offset by Az', slew.b)
+                            self._telescope.Jog(math.fabs(az), "L" if alt < 0 else "R")
+                            self._requested_slew = None
+                        elif slew.type == RequestedSlew.Equatorial:
+                            # Precess J2000 coords to JNow
+                            radec_j2000 = SkyCoord(slew.a, slew.b, frame=J2000, unit="rad")
+                            radec_jnow = radec_j2000.transform_to(FK5(equinox=Time.now()))
+                            ra = radec_jnow.ra.to(u.hourangle).value
+                            dec = radec_jnow.dec.to(u.deg).value
+                            print('Slew to RaDec', slew.a, slew.b)
+                            self._telescope.SlewToRaDec(ra, dec, "Target")
+                            self._requested_slew = None
+                        elif slew.type == RequestedSlew.EquatorialOffsetFirst:
+                            ra = math.degrees(slew.a) * 60
+                            print('Offset by Ra', slew.a)
+                            self._telescope.Jog(math.fabs(ra), "W" if ra < 0 else "E")
+                            slew.type = RequestedSlew.EquatorialOffsetSecond
+                        elif slew.type == RequestedSlew.EquatorialOffsetSecond:
+                            dec = math.degrees(slew.b) * 60
+                            print('Offset by Dec', slew.b)
+                            self._telescope.Jog(math.fabs(dec), "S" if dec < 0 else "N")
+                            self._requested_slew = None
+                except pywintypes.com_error as e:
+                    if e.excepinfo[2].startswith('Limits exceeded.'):
+                        print('Requested slew was outside limits')
+                        self._slew_outside_limits = True
+                    print('unknown exception', e)
+                    print('Aborting slew')
+                    self._requested_slew = None
+                    self._slew_aborted = True
+                except Exception as e:
+                    err = parse_tel_exception(e)
+                    if err == TelError.SlewOutsideLimits:
+                        self._slew_outside_limits = True
+                    print('Aborting slew')
+                    self._requested_slew = None
+                    self._slew_aborted = True
+
+            self.__tel_query_state()
+
+            time.sleep(TELSTAT_QUERY_DELAY)
+
+    @Pyro4.expose
+    def report_status(self):
+        """Returns a dictionary containing the current telescope state"""
+        data = {
+            'state': self._state,
+            'software_version': SOFTWARE_VERSION
+        }
+
+        if self._state >= TelescopeState.Slewing:
+            with self._current_lock:
+                data.update({
+                    'ra': self._current_ra,
+                    'dec': self._current_dec,
+                    'alt': self._current_alt,
+                    'az': self._current_az,
+                })
+
+        return data
+
+    @Pyro4.expose
+    def initialize(self):
+        """Turns on the power and starts the lower level hardware daemons"""
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._state != TelescopeState.Disabled:
+                return CommandStatus.TelescopeNotDisabled
+
+            with self._initialize_shutdown_condition:
+                self._requested_active = True
+                self._initialize_shutdown_condition.wait(INITIALIZE_TIMEOUT)
+
+            return self._initialization_status
+
+    @Pyro4.expose
+    def shutdown(self):
+        """Disables and powers off the telescope"""
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._state == TelescopeState.Disabled:
+                return CommandStatus.TelescopeNotEnabled
+
+            if self._state == TelescopeState.Initializing:
+                return CommandStatus.TelescopeInitializing
+
+            with self._initialize_shutdown_condition:
+                self._requested_active = False
+                self._requested_stop = True
+                self._requested_tracking = False
+                self._initialize_shutdown_condition.wait(SHUTDOWN_TIMEOUT)
+
+            if self._state != TelescopeState.Disabled:
+                return CommandStatus.Failed
+
+            return CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def stop(self):
+        """Stops any active telescope movement"""
+        if self._state < TelescopeState.Initializing:
+            return CommandStatus.TelescopeNotEnabled
+
+        self._requested_stop = True
+        self._requested_tracking = False
+        return CommandStatus.Succeeded
+
+    def __slew(self, coordinates, tracking=None, offset=False, altaz=False):
+        """Called from a client thread to queue a slew command
+           and block until it completes.
+
+           coordinates is a tuple of (ra, dec) if altaz = False
+           or (alt, az) if altaz = True
+
+           tracking should be set to False to disable sidereal tracking after the slew
+
+           Returns a CommandStatus with a result code (Succeeded, SlewAborted, CoordinatesOutsideLimits)
+        """
+        with self._slew_lock:
+            if tracking is not None:
+                self._requested_tracking = tracking
+
+            if offset:
+                if altaz:
+                    type = RequestedSlew.HorizonOffsetFirst
+                else:
+                    type = RequestedSlew.EquatorialOffsetFirst
+            else:
+                if altaz:
+                    type = RequestedSlew.Horizon
+                else:
+                    type = RequestedSlew.Equatorial
+            self._requested_slew = RequestedSlew(coordinates[0], coordinates[1], type)
+
+        with self._slew_condition:
+            while True:
+                self._slew_condition.wait(1)
+
+                if self._state != TelescopeState.Slewing and self._requested_slew is None:
+                    break
+
+        if self._slew_outside_limits:
+            return CommandStatus.CoordinatesOutsideLimits
+        return CommandStatus.SlewAborted if self._slew_aborted else CommandStatus.Succeeded
+
+    @Pyro4.expose
+    def slew_altaz(self, alt_radians, az_radians):
+        """Moves the telescope to a target"""
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._state < TelescopeState.Stopped:
+                return CommandStatus.TelescopeNotEnabled
+
+            if self._state > TelescopeState.Stopped:
+                return CommandStatus.TelescopeIsTracking
+
+            return self.__slew((alt_radians, az_radians), tracking=False, altaz=True)
+
+    @Pyro4.expose
+    def slew_radec(self, ra_radians, dec_radians):
+        """Moves the telescope to a target"""
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._state < TelescopeState.Stopped:
+                return CommandStatus.TelescopeNotEnabled
+
+            if self._state > TelescopeState.Stopped:
+                return CommandStatus.TelescopeIsTracking
+
+            return self.__slew((ra_radians, dec_radians), tracking=False)
+
+    @Pyro4.expose
+    def track_radec(self, ra_radians, dec_radians):
+        """Moves the telescope to a target and starts tracking"""
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._state < TelescopeState.Stopped:
+                return CommandStatus.TelescopeNotEnabled
+
+            if self._state > TelescopeState.Stopped:
+                return CommandStatus.TelescopeIsTracking
+
+            return self.__slew((ra_radians, dec_radians), tracking=True)
+
+    @Pyro4.expose
+    def offset_radec(self, ra_delta_radians, dec_delta_radians):
+        """Offsets the telescope relative to the current position"""
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._state < TelescopeState.Stopped:
+                return CommandStatus.TelescopeNotEnabled
+
+            return self.__slew((ra_delta_radians, dec_delta_radians), offset=True)
+
+    @Pyro4.expose
+    def ping(self):
+        """Returns immediately with a success status"""
+        return CommandStatus.Succeeded
+
+if __name__ == '__main__':
+    daemons.rasa_telescope.launch(TelescopeDaemon())
