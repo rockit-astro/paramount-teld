@@ -1,4 +1,4 @@
-## SuperWASP upgrade prototype telescope daemon
+## SuperWASP upgrade prototype telescope daemon [![Travis CI build status](https://travis-ci.org/warwick-one-metre/rasa-teld.svg?branch=master)](https://travis-ci.org/warwick-one-metre/rasa-teld)
 
 Part of the observatory software for the SuperWASP upgrade prototype
 

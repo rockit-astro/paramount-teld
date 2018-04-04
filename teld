@@ -43,7 +43,7 @@ from warwick.observatory.common import (
     TryLock)
 
 from warwick.observatory.common.daemons import PyroDaemon
-daemons.rasa_telescope = PyroDaemon('telescope_daemon', '127.0.0.1', 9003, 5)
+from warwick.rasa.telescope import CommandStatus, TelescopeState
 
 # Set automatically when generating RPM package
 SOFTWARE_VERSION = 'UNKNOWN'
@@ -57,27 +57,6 @@ SHUTDOWN_TIMEOUT = 20
 
 J2000 = FK5(equinox=Time(2000, format='jyear', scale='utc'))
 
-# This should be kept in sync with the dictionary in tel
-class CommandStatus:
-    """Numeric return codes"""
-    # General error codes
-    Succeeded = 0
-    Failed = 1
-    Blocked = 2
-
-    CannotCommunicateWithPowerDaemon = 5
-    SerialNotAvailable = 6
-    SerialTimeout = 7
-
-    # Command-specific codes
-    TelescopeNotDisabled = 10
-    TelescopeIsTracking = 11
-    TelescopeNotEnabled = 12
-    TelescopeInitializing = 13
-
-    CoordinatesOutsideLimits = 20
-    SlewAborted = 21
-
 class TelError:
     NoError = 0
     Other = 1
@@ -85,10 +64,6 @@ class TelError:
     SerialTimeout = 3
     SlewOutsideLimits = 4
     CommandInProgress = 5
-
-class TelescopeState:
-    Disabled, Initializing, Slewing, Stopped, Tracking = range(5)
-    Names = ['DISABLED', 'INITIALIZING', 'SLEWING', 'STOPPED', 'TRACKING']
 
 class RequestedSlew:
     NoSlew, Equatorial, Horizon, EquatorialOffsetFirst, EquatorialOffsetSecond, HorizonOffsetFirst, HorizonOffsetSecond = range(7)

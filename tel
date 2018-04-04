@@ -26,9 +26,7 @@ import sys
 import time
 import Pyro4
 from warwick.observatory.common import daemons
-
-from warwick.observatory.common.daemons import PyroDaemon
-daemons.rasa_telescope = PyroDaemon('telescope_daemon', '127.0.0.1', 9003, 5)
+from warwick.rasa.telescope import CommandStatus, TelescopeState
 
 # This timeout is used for an initial ping before running the real command
 # The real commands may take much longer than this, so we can't apply the timeout there.
@@ -38,39 +36,9 @@ SCRIPT_NAME = os.path.basename(sys.argv[0])
 
 # Positions in degrees (alt, az)
 PARK_POSITIONS = {
-    'stow': (math.radians(35), math.radians(16), 'general purpose park protecting the mirror and instrument'),
+    'stow': (math.radians(35), math.radians(16),
+             'general purpose park protecting the mirror and instrument'),
     'zenith': (math.pi / 2, 0, 'park at zenith for maintenance tasks'),
-}
-
-# This should be kept in sync with the class in teld
-STATUS_CODES = {
-    # General error codes
-    1: 'error: command failed',
-    2: 'error: another command is already running',
-    5: 'error: telescope failed to communicate with power system daemon',
-    6: 'error: failed to open serial connection to mount',
-    7: 'error: mount is not responding to serial commands (powered off?)',
-
-    # Command-specific codes
-    10: 'error: telescope is active',
-    11: 'error: telescope is tracking',
-    12: 'error: telescope has not been initialized',
-    13: 'error: telescope is initializing',
-    14: 'error: telescope has already been initialized',
-    15: 'error: telescope is tracking',
-    16: 'error: telescope is guiding',
-    20: 'error: requested coordinates outside limits',
-    21: 'error: slew aborted',
-    31: 'error: failed to load reference frame',
-
-    # tel specific codes
-    -100: 'error: terminated by user',
-    -101: 'error: unable to communicate with telescope daemon',
-    -102: 'error: unable to communicate with power system daemon',
-    -103: 'error: unable to communicate with data pipeline daemon',
-
-    -110: 'error: telescope drive power is disabled',
-    -111: 'error: telescope cover power is disabled'
 }
 
 FMT_GREEN = '\033[92m'
@@ -85,10 +53,6 @@ TELESCOPE_STATE_FORMATS = {
     3: FMT_GREEN,
     4: FMT_GREEN
 }
-
-class TelescopeState:
-    Disabled, Initializing, Slewing, Stopped, Tracking = range(5)
-    Names = ['DISABLED', 'INITIALIZING', 'SLEWING', 'STOPPED', 'TRACKING']
 
 sys.excepthook = Pyro4.util.excepthook
 
@@ -107,10 +71,8 @@ def run_command(command):
         ret = -101
 
     # Print message associated with error codes, except for -1 (error handled locally)
-    if ret in STATUS_CODES:
-        print(STATUS_CODES[ret])
-    elif ret != -1 and ret != 0:
-        print('Returned unknown status code: {0}'.format(ret))
+    if ret != -1 and ret != 0:
+        print(CommandStatus.message(ret))
     sys.exit(ret)
 
 def sexagesimal(angle):
