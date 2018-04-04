@@ -18,14 +18,14 @@
 """Daemon for controlling a Paramount ME via Pyro"""
 
 # pylint: disable=invalid-name
-# pylint: disable=too-many-return-statements
-# pylint: disable=too-few-public-methods
-# pylint: disable=too-many-instance-attributes
-# pylint: disable=no-self-use
-# pylint: disable=too-many-statements
+# pylint: disable=broad-except
 # pylint: disable=bare-except
 # pylint: disable=too-many-lines
-# pylint: disable=broad-except
+# pylint: disable=too-many-branches
+# pylint: disable=too-many-statements
+# pylint: disable=too-many-instance-attributes
+# pylint: disable=too-many-return-statements
+# pylint: disable=too-few-public-methods
 
 import math
 import threading
@@ -39,10 +39,8 @@ import win32com.client
 import pywintypes
 from warwick.observatory.common import (
     daemons,
-    log,
     TryLock)
 
-from warwick.observatory.common.daemons import PyroDaemon
 from warwick.rasa.telescope import CommandStatus, TelescopeState
 
 # Set automatically when generating RPM package
@@ -58,6 +56,7 @@ SHUTDOWN_TIMEOUT = 20
 J2000 = FK5(equinox=Time(2000, format='jyear', scale='utc'))
 
 class TelError:
+    """Return code enum representing error states from the underlying controller"""
     NoError = 0
     Other = 1
     SerialConnectionFailed = 2
@@ -66,12 +65,14 @@ class TelError:
     CommandInProgress = 5
 
 class RequestedSlew:
-    NoSlew, Equatorial, Horizon, EquatorialOffsetFirst, EquatorialOffsetSecond, HorizonOffsetFirst, HorizonOffsetSecond = range(7)
+    """Represents a requested slew type and vector"""
+    NoSlew, Equatorial, Horizon, EquatorialOffsetFirst, EquatorialOffsetSecond, \
+    HorizonOffsetFirst, HorizonOffsetSecond = range(7)
 
-    def __init__(self, a, b, type):
+    def __init__(self, a, b, t):
         self.a = a
         self.b = b
-        self.type = type
+        self.type = t
 
 def set_mount_power(enabled):
     """Enable or disable the mount power via the power daemon
@@ -88,6 +89,7 @@ def set_mount_power(enabled):
     return True
 
 def parse_tel_exception(e):
+    """Parses and returns a TelError value from a given exception"""
     if isinstance(e, pywintypes.com_error):
         # TODO: Log to database
         if e.excepinfo and e.excepinfo[2].startswith('Could not open communications port.'):
@@ -158,10 +160,12 @@ class TelescopeDaemon:
                     self._telescope.GetAzAlt()
 
                     # Precess JNow coords to J2000
+                    # pylint: disable=no-member
                     radec_jnow = SkyCoord(self._telescope.dRA * u.hourangle,
                                           self._telescope.dDec * u.deg,
                                           frame=FK5(equinox=Time.now()))
                     radec_j2000 = radec_jnow.transform_to(J2000)
+                    # pylint: enable=no-member
 
                     self._current_ra = radec_j2000.ra.to(u.rad).value
                     self._current_dec = radec_j2000.dec.to(u.rad).value
@@ -313,10 +317,12 @@ class TelescopeDaemon:
                             self._requested_slew = None
                         elif slew.type == RequestedSlew.Equatorial:
                             # Precess J2000 coords to JNow
+                            # pylint: disable=no-member
                             radec_j2000 = SkyCoord(slew.a, slew.b, frame=J2000, unit="rad")
                             radec_jnow = radec_j2000.transform_to(FK5(equinox=Time.now()))
                             ra = radec_jnow.ra.to(u.hourangle).value
                             dec = radec_jnow.dec.to(u.deg).value
+                            # pylint: enable=no-member
                             print('Slew to RaDec', slew.a, slew.b)
                             self._telescope.SlewToRaDec(ra, dec, "Target")
                             self._requested_slew = None
@@ -428,7 +434,8 @@ class TelescopeDaemon:
 
            tracking should be set to False to disable sidereal tracking after the slew
 
-           Returns a CommandStatus with a result code (Succeeded, SlewAborted, CoordinatesOutsideLimits)
+           Returns a CommandStatus with a result code (Succeeded, SlewAborted,
+                                                       CoordinatesOutsideLimits)
         """
         with self._slew_lock:
             if tracking is not None:
@@ -436,15 +443,15 @@ class TelescopeDaemon:
 
             if offset:
                 if altaz:
-                    type = RequestedSlew.HorizonOffsetFirst
+                    slew_type = RequestedSlew.HorizonOffsetFirst
                 else:
-                    type = RequestedSlew.EquatorialOffsetFirst
+                    slew_type = RequestedSlew.EquatorialOffsetFirst
             else:
                 if altaz:
-                    type = RequestedSlew.Horizon
+                    slew_type = RequestedSlew.Horizon
                 else:
-                    type = RequestedSlew.Equatorial
-            self._requested_slew = RequestedSlew(coordinates[0], coordinates[1], type)
+                    slew_type = RequestedSlew.Equatorial
+            self._requested_slew = RequestedSlew(coordinates[0], coordinates[1], slew_type)
 
         with self._slew_condition:
             while True:
@@ -514,10 +521,12 @@ class TelescopeDaemon:
 
             return self.__slew((ra_delta_radians, dec_delta_radians), offset=True)
 
+    # pylint: disable=no-self-use
     @Pyro4.expose
     def ping(self):
         """Returns immediately with a success status"""
         return CommandStatus.Succeeded
+    # pylint: enable=no-self-use
 
 if __name__ == '__main__':
     daemons.rasa_telescope.launch(TelescopeDaemon())
