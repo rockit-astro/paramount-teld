@@ -53,6 +53,11 @@ TELSTAT_QUERY_DELAY = 0.5
 INITIALIZE_TIMEOUT = 120
 SHUTDOWN_TIMEOUT = 20
 
+# Values from W1m - close enough!
+SITE_LATITUDE = math.radians(28.7603135)
+SITE_LONGITUDE = math.radians(-17.8796168)
+SITE_ELEVATION = 2387
+
 J2000 = FK5(equinox=Time(2000, format='jyear', scale='utc'))
 
 class TelError:
@@ -361,16 +366,33 @@ class TelescopeDaemon:
         """Returns a dictionary containing the current telescope state"""
         data = {
             'state': self._state,
+            'state_label': TelescopeState.Names[self._state],
             'software_version': SOFTWARE_VERSION
         }
 
         if self._state >= TelescopeState.Slewing:
             with self._current_lock:
+                cos_alt = math.cos(self._current_alt)
+                sin_alt = math.sin(self._current_alt)
+                cos_az = math.cos(self._current_az)
+                cos_lat = math.cos(SITE_LATITUDE)
+                sin_lat = math.sin(SITE_LATITUDE)
+
+                # Calculate dec manually from alt/az to avoid calculation mismatches
+                sin_dec = sin_alt * sin_lat + cos_alt * cos_lat * cos_az
+                cos_dec = math.cos(math.asin(sin_dec))
+
+                ha = math.acos((sin_alt - sin_lat * sin_dec) / (cos_lat * cos_dec))
+
                 data.update({
                     'ra': self._current_ra,
                     'dec': self._current_dec,
                     'alt': self._current_alt,
                     'az': self._current_az,
+                    'ha': ha,
+                    'site_latitude': SITE_LATITUDE,
+                    'site_longitude': SITE_LONGITUDE,
+                    'site_elevation': SITE_ELEVATION,
                 })
 
         return data
