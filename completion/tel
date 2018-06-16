@@ -1,0 +1,22 @@
+_tel()
+{
+    compopt +o default
+    local cur prev opts
+    COMPREPLY=()
+    cur="${COMP_WORDS[COMP_CWORD]}"
+    prev="${COMP_WORDS[COMP_CWORD-1]}"
+    opts="status park slew horizon track offset stop init kill reboot"
+
+    case "${prev}" in
+        park)
+            opts="stow zenith"
+            ;;
+        *)
+            ;;
+    esac
+
+    COMPREPLY=($(compgen -W "${opts}" -- ${cur}))
+    return 0
+}
+
+complete -F _tel tel
