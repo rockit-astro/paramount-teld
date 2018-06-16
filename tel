@@ -230,15 +230,17 @@ def status():
         print('   Telescope is {}'.format(state_desc))
         return 0
 
-    ra_desc = sexagesimal(float(data['ra']) * 12 / math.pi)
-    dec_desc = sexagesimal(float(data['dec']) * 180 / math.pi)
+    ra_desc = sexagesimal(data['ra'] * 12 / math.pi)
+    ha_desc = sexagesimal(data['ha'] * 12 / math.pi)
+    dec_desc = sexagesimal(math.degrees(data['dec']))
 
-    alt_desc = sexagesimal(float(data['alt']) * 180 / math.pi)
-    az_desc = sexagesimal(float(data['az']) * 180 / math.pi)
+    alt_desc = sexagesimal(math.degrees(data['alt']))
+    az_desc = sexagesimal(math.degrees(data['az']))
 
     print('   Telescope is {}'.format(state_desc))
     print('   RA is ' + ra_desc)
     print('   Dec is ' + dec_desc)
+    print('   HA is ' + ha_desc)
     print('   Altitude is ' + alt_desc)
     print('   Azimuth is ' + az_desc)
 
