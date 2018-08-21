@@ -41,17 +41,18 @@ PARK_POSITIONS = {
     'zenith': (math.pi / 2, 0, 'park at zenith for maintenance tasks'),
 }
 
+FMT_YELLOW = '\033[93m'
 FMT_GREEN = '\033[92m'
 FMT_RED = '\033[91m'
 FMT_BOLD = '\033[1m'
 FMT_CLEAR = '\033[0m'
 
 TELESCOPE_STATE_FORMATS = {
-    0: FMT_RED,
-    1: FMT_RED,
-    2: '',
-    3: FMT_GREEN,
-    4: FMT_GREEN
+    0: FMT_BOLD + FMT_RED,
+    1: FMT_BOLD + FMT_YELLOW,
+    2: FMT_BOLD + FMT_YELLOW,
+    3: FMT_BOLD + FMT_RED,
+    4: FMT_BOLD + FMT_GREEN
 }
 
 sys.excepthook = Pyro4.util.excepthook
@@ -223,24 +224,24 @@ def status():
     with daemons.rasa_telescope.connect(timeout=0) as teld:
         data = teld.report_status()
 
-    state_desc = TelescopeState.Names[data['state']]
+    state_desc = TELESCOPE_STATE_FORMATS[data['state']] + TelescopeState.Names[data['state']] \
+        + FMT_CLEAR
 
     # Telescope is disabled
     if data['state'] < TelescopeState.Slewing:
         print('   Telescope is {}'.format(state_desc))
         return 0
 
-    ra_desc = sexagesimal(data['ra'] * 12 / math.pi)
-    ha_desc = sexagesimal(data['ha'] * 12 / math.pi)
-    dec_desc = sexagesimal(math.degrees(data['dec']))
-
-    alt_desc = sexagesimal(math.degrees(data['alt']))
-    az_desc = sexagesimal(math.degrees(data['az']))
+    ra_desc = FMT_BOLD + sexagesimal(data['ra'] * 12 / math.pi) + FMT_CLEAR
+    dec_desc = FMT_BOLD + sexagesimal(math.degrees(data['dec'])) + FMT_CLEAR
+    alt_desc = FMT_BOLD + sexagesimal(math.degrees(data['alt'])) + FMT_CLEAR
+    az_desc = FMT_BOLD + sexagesimal(math.degrees(data['az'])) + FMT_CLEAR
+    lst_desc = FMT_BOLD + sexagesimal(data['lst'] * 12 / math.pi) + FMT_CLEAR
 
     print('   Telescope is {}'.format(state_desc))
+    print('   LST is ' + lst_desc)
     print('   RA is ' + ra_desc)
     print('   Dec is ' + dec_desc)
-    print('   HA is ' + ha_desc)
     print('   Altitude is ' + alt_desc)
     print('   Azimuth is ' + az_desc)
 
