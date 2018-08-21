@@ -29,8 +29,10 @@
 
 import datetime
 import math
+import sys
 import threading
 import time
+import traceback
 from astropy.coordinates import SkyCoord, FK5, EarthLocation
 from astropy.time import Time
 import astropy.units as u
@@ -40,6 +42,7 @@ import win32com.client
 import pywintypes
 from warwick.observatory.common import (
     daemons,
+    log,
     TryLock)
 
 from warwick.rasa.telescope import CommandStatus, TelescopeState
@@ -100,22 +103,26 @@ def set_mount_power(enabled):
 def parse_tel_exception(e):
     """Parses and returns a TelError value from a given exception"""
     if isinstance(e, pywintypes.com_error):
-        # TODO: Log to database
         if e.excepinfo and e.excepinfo[2].startswith('Could not open communications port.'):
             print('Failed to connect to serial port')
+            log.error('rasa_teld', 'Failed to connect to serial port')
             return TelError.SerialConnectionFailed
         if e.excepinfo and e.excepinfo[2].startswith('Receive time-out.COMM_TIMEOUT'):
             print('Serial timeout')
+            log.error('rasa_teld', 'Serial timeout')
             return TelError.SerialTimeout
         if e.excepinfo and e.excepinfo[2].startswith('Limits exceeded.'):
             print('Requested slew was outside limits')
+            log.error('rasa_teld', 'Requested slew was outside limits')
             return TelError.SlewOutsideLimits
         if e.excepinfo and e.excepinfo[2].startswith('Command in progress.'):
             print('Command in progress')
+            log.error('rasa_teld', 'Command in progress')
             return TelError.CommandInProgress
 
     print('Unknown exception:')
-    print(e)
+    traceback.print_exc(file=sys.stdout)
+    log.error('rasa_teld', 'Unknown error communicating with mount')
     return TelError.Other
 
 class TelescopeDaemon:
