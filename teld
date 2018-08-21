@@ -488,9 +488,6 @@ class TelescopeDaemon:
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
 
-            if self._state > TelescopeState.Stopped:
-                return CommandStatus.TelescopeIsTracking
-
             return self.__slew((alt_radians, az_radians), tracking=False, altaz=True)
 
     @Pyro4.expose
@@ -503,9 +500,6 @@ class TelescopeDaemon:
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
 
-            if self._state > TelescopeState.Stopped:
-                return CommandStatus.TelescopeIsTracking
-
             return self.__slew((ra_radians, dec_radians), tracking=False)
 
     @Pyro4.expose
@@ -517,9 +511,6 @@ class TelescopeDaemon:
 
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
-
-            if self._state > TelescopeState.Stopped:
-                return CommandStatus.TelescopeIsTracking
 
             return self.__slew((ra_radians, dec_radians), tracking=True)
 

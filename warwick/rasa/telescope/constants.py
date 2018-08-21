@@ -33,7 +33,6 @@ class CommandStatus:
 
     # Command-specific codes
     TelescopeNotDisabled = 10
-    TelescopeIsTracking = 11
     TelescopeNotEnabled = 12
     TelescopeInitializing = 13
 
@@ -49,12 +48,9 @@ class CommandStatus:
 
         # Command-specific codes
         10: 'error: telescope is active',
-        11: 'error: telescope is tracking',
         12: 'error: telescope has not been initialized',
         13: 'error: telescope is initializing',
-        14: 'error: telescope has already been initialized',
-        15: 'error: telescope is tracking',
-        16: 'error: telescope is guiding',
+
         20: 'error: requested coordinates outside limits',
         21: 'error: slew aborted',
         31: 'error: failed to load reference frame',
