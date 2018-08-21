@@ -88,16 +88,16 @@ class RequestedSlew:
 
 def set_mount_power(enabled):
     """Enable or disable the mount power via the power daemon
-    Return True on success or False on failure
+       Returns True on success or False on failure
     """
-    #try:
-    #    with daemons.rasa_power.connect() as power:
-    #        if not power.switch('mount', enabled):
-    #            return False
-    #except Pyro4.errors.CommunicationError:
-    #    toggle = 'enable' if enabled else 'disable'
-    #    log.error('rasa_teld', 'Failed to {} mount power'.format(toggle))
-    #    return false
+    try:
+        with daemons.rasa_power.connect() as power:
+            if not power.switch('telescope', enabled):
+                return False
+    except Pyro4.errors.CommunicationError:
+        toggle = 'enable' if enabled else 'disable'
+        log.error('rasa_teld', 'Failed to {} mount power'.format(toggle))
+        return False
     return True
 
 def parse_tel_exception(e):
