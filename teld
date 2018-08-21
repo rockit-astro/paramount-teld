@@ -53,7 +53,7 @@ SOFTWARE_VERSION = 'UNKNOWN'
 # Delay between status queries (in seconds)
 TELSTAT_QUERY_DELAY = 0.5
 
-# Maximum time to power up and find home (in seconds)
+# Maximum time to find home (in seconds)
 INITIALIZE_TIMEOUT = 120
 SHUTDOWN_TIMEOUT = 20
 
@@ -85,20 +85,6 @@ class RequestedSlew:
         self.a = a
         self.b = b
         self.type = t
-
-def set_mount_power(enabled):
-    """Enable or disable the mount power via the power daemon
-       Returns True on success or False on failure
-    """
-    try:
-        with daemons.rasa_power.connect() as power:
-            if not power.switch('telescope', enabled):
-                return False
-    except Pyro4.errors.CommunicationError:
-        toggle = 'enable' if enabled else 'disable'
-        log.error('rasa_teld', 'Failed to {} mount power'.format(toggle))
-        return False
-    return True
 
 def parse_tel_exception(e):
     """Parses and returns a TelError value from a given exception"""
@@ -200,36 +186,32 @@ class TelescopeDaemon:
             self._requested_active = False
 
     def __tel_initialize_mount(self):
-        print('Enabling mount')
-        log.info('rasa_teld', 'Enabling mount')
-        if set_mount_power(True):
-            try:
-                self._state = TelescopeState.Initializing
-                if not self._telescope.IsConnected:
-                    self._telescope.Connect()
+        print('Initializing mount')
+        log.info('rasa_teld', 'Initializing mount')
+        try:
+            self._state = TelescopeState.Initializing
+            if not self._telescope.IsConnected:
+                self._telescope.Connect()
 
-                # Home telescope
-                self._telescope.FindHome()
+            # Home telescope
+            self._telescope.FindHome()
 
-                # Disable tracking
-                self._telescope.SetTracking(0, 1, 0, 0)
-                self._state = TelescopeState.Stopped
-                self._initialization_status = CommandStatus.Succeeded
-            except Exception as e:
-                err = parse_tel_exception(e)
-                if err == TelError.SerialConnectionFailed:
-                    self._initialization_status = CommandStatus.SerialNotAvailable
-                elif err == TelError.SerialTimeout:
-                    self._initialization_status = CommandStatus.SerialTimeout
-                else:
-                    self._initialization_status = CommandStatus.Failed
+            # Disable tracking
+            self._telescope.SetTracking(0, 1, 0, 0)
+            self._state = TelescopeState.Stopped
+            self._initialization_status = CommandStatus.Succeeded
+        except Exception as e:
+            err = parse_tel_exception(e)
+            if err == TelError.SerialConnectionFailed:
+                self._initialization_status = CommandStatus.SerialNotAvailable
+            elif err == TelError.SerialTimeout:
+                self._initialization_status = CommandStatus.SerialTimeout
+            else:
+                self._initialization_status = CommandStatus.Failed
 
-            if self._initialization_status != CommandStatus.Succeeded:
-                set_mount_power(False)
-                self._requested_active = False
-                self._state = TelescopeState.Disabled
-        else:
-            self._initialization_status = CommandStatus.CannotCommunicateWithPowerDaemon
+        if self._initialization_status != CommandStatus.Succeeded:
+            self._requested_active = False
+            self._state = TelescopeState.Disabled
 
         with self._initialize_shutdown_condition:
             self._initialize_shutdown_condition.notify_all()
@@ -243,9 +225,6 @@ class TelescopeDaemon:
             self._thesky.DisconnectTelescope()
         except Exception as e:
             parse_tel_exception(e)
-
-        # Power off the mount, ignoring errors
-        set_mount_power(False)
 
         self._state = TelescopeState.Disabled
         with self._initialize_shutdown_condition:
@@ -391,7 +370,7 @@ class TelescopeDaemon:
 
     @Pyro4.expose
     def initialize(self):
-        """Turns on the power and starts the lower level hardware daemons"""
+        """Enables and homes the mount"""
         with TryLock(self._command_lock) as success:
             if not success:
                 return CommandStatus.Blocked
@@ -407,7 +386,7 @@ class TelescopeDaemon:
 
     @Pyro4.expose
     def shutdown(self):
-        """Disables and powers off the telescope"""
+        """Disables the mount"""
         with TryLock(self._command_lock) as success:
             if not success:
                 return CommandStatus.Blocked

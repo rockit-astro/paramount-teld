@@ -253,19 +253,19 @@ def stop():
         return teld.stop()
 
 def initialize():
-    """Enables the power and talon daemons"""
+    """Enables and homes the mount"""
     ping_teld()
     with daemons.rasa_telescope.connect(timeout=0) as teld:
         return teld.initialize()
 
 def shutdown():
-    """Disables the talon daemons and power"""
+    """Disables the mount"""
     ping_teld()
     with daemons.rasa_telescope.connect(timeout=0) as teld:
         return teld.shutdown()
 
 def reboot():
-    """Reboots the talon daemons and power"""
+    """Reboots the mount"""
     shutdown()
     time.sleep(5)
     return initialize()
@@ -291,9 +291,9 @@ def print_usage():
     print('   stop      immediately stop any telescope movement')
     print()
     print('engineering commands:')
-    print('   init      power on the telescope and start low-level hardware daemons')
-    print('   kill      kill low-level hardware daemons and power off the telescope')
-    print('   reboot    kill and reinitialize the telescope and low-level daemons')
+    print('   init      initialize and homes the mount')
+    print('   kill      disables the mount')
+    print('   reboot    kill and reinitialize the telescope daemon')
     print()
 
     return 0

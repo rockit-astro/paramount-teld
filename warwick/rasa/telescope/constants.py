@@ -27,7 +27,6 @@ class CommandStatus:
     Failed = 1
     Blocked = 2
 
-    CannotCommunicateWithPowerDaemon = 5
     SerialNotAvailable = 6
     SerialTimeout = 7
 
@@ -42,7 +41,6 @@ class CommandStatus:
     _messages = {
         1: 'error: command failed',
         2: 'error: another command is already running',
-        5: 'error: telescope failed to communicate with power system daemon',
         6: 'error: failed to open serial connection to mount',
         7: 'error: mount is not responding to serial commands (powered off?)',
 
@@ -58,11 +56,6 @@ class CommandStatus:
         # tel specific codes
         -100: 'error: terminated by user',
         -101: 'error: unable to communicate with telescope daemon',
-        -102: 'error: unable to communicate with power system daemon',
-        -103: 'error: unable to communicate with data pipeline daemon',
-
-        -110: 'error: telescope drive power is disabled',
-        -111: 'error: telescope cover power is disabled'
     }
 
     @classmethod
