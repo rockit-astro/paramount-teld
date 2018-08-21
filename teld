@@ -197,12 +197,11 @@ class TelescopeDaemon:
 
         except Exception as e:
             parse_tel_exception(e)
-            print('Shutting down mount')
             self._requested_active = False
 
     def __tel_initialize_mount(self):
-        print('enabling mount')
-
+        print('Enabling mount')
+        log.info('rasa_teld', 'Enabling mount')
         if set_mount_power(True):
             try:
                 self._state = TelescopeState.Initializing
@@ -236,7 +235,8 @@ class TelescopeDaemon:
             self._initialize_shutdown_condition.notify_all()
 
     def __tel_shutdown_mount(self):
-        print('shutting down mount')
+        print('Shutting down mount')
+        log.info('rasa_teld', 'Shutting down mount')
         try:
             # Disable tracking and disconnect
             self._telescope.SetTracking(0, 1, 0, 0)
@@ -278,8 +278,8 @@ class TelescopeDaemon:
                     self._requested_stop = False
                 except Exception as e:
                     print('Failed to stop slew')
+                    log.error('rasa_teld', 'Failed to stop slew')
                     parse_tel_exception(e)
-                    print('Shutting down mount')
                     self._requested_active = False
 
             if self._state == TelescopeState.Slewing:
@@ -294,8 +294,8 @@ class TelescopeDaemon:
 
                 except Exception as e:
                     print('Failed to check slew status')
+                    log.error('rasa_teld', 'Failed to check slew status')
                     parse_tel_exception(e)
-                    print('Shutting down mount')
                     self._requested_active = False
 
             with self._slew_lock:
@@ -305,8 +305,8 @@ class TelescopeDaemon:
                     self._telescope.SetTracking(1 if self._requested_tracking else 0, 1, 0, 0)
                 except Exception as e:
                     print('Failed to set tracking')
+                    log.error('rasa_teld', 'Failed to set tracking')
                     parse_tel_exception(e)
-                    print('Shutting down mount')
                     self._requested_active = False
 
                 try:
@@ -352,19 +352,10 @@ class TelescopeDaemon:
                             print('Offset by Dec', slew.b)
                             self._telescope.Jog(math.fabs(dec), "S" if dec < 0 else "N")
                             self._requested_slew = None
-                except pywintypes.com_error as e:
-                    if e.excepinfo[2].startswith('Limits exceeded.'):
-                        print('Requested slew was outside limits')
-                        self._slew_outside_limits = True
-                    print('unknown exception', e)
-                    print('Aborting slew')
-                    self._requested_slew = None
-                    self._slew_aborted = True
                 except Exception as e:
                     err = parse_tel_exception(e)
                     if err == TelError.SlewOutsideLimits:
                         self._slew_outside_limits = True
-                    print('Aborting slew')
                     self._requested_slew = None
                     self._slew_aborted = True
 
