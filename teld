@@ -360,7 +360,7 @@ class TelescopeDaemon:
                     'dec': self._current_dec,
                     'alt': self._current_alt,
                     'az': self._current_az,
-                    'lst': timenow.sidereal_time('apparent'),
+                    'lst': timenow.sidereal_time('apparent').rad,
                     'site_latitude': SITE_LOCATION.latitude.rad,
                     'site_longitude': SITE_LOCATION.longitude.rad,
                     'site_elevation': float(SITE_LOCATION.height / u.m),
