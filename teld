@@ -27,10 +27,11 @@
 # pylint: disable=too-many-return-statements
 # pylint: disable=too-few-public-methods
 
+import datetime
 import math
 import threading
 import time
-from astropy.coordinates import SkyCoord, FK5
+from astropy.coordinates import SkyCoord, FK5, EarthLocation
 from astropy.time import Time
 import astropy.units as u
 import Pyro4
@@ -54,9 +55,12 @@ INITIALIZE_TIMEOUT = 120
 SHUTDOWN_TIMEOUT = 20
 
 # Values from W1m - close enough!
-SITE_LATITUDE = math.radians(28.7603135)
-SITE_LONGITUDE = math.radians(-17.8796168)
-SITE_ELEVATION = 2387
+# pylint: disable=no-member
+SITE_LOCATION = EarthLocation(
+    lat=28.7603135*u.deg,
+    lon=-17.8796168*u.deg,
+    height=2387*u.m)
+# pylint: enable=no-member
 
 J2000 = FK5(equinox=Time(2000, format='jyear', scale='utc'))
 
@@ -372,29 +376,19 @@ class TelescopeDaemon:
 
         if self._state >= TelescopeState.Slewing:
             with self._current_lock:
-                cos_alt = math.cos(self._current_alt)
-                sin_alt = math.sin(self._current_alt)
-                cos_az = math.cos(self._current_az)
-                cos_lat = math.cos(SITE_LATITUDE)
-                sin_lat = math.sin(SITE_LATITUDE)
-
-                # Calculate dec manually from alt/az to avoid calculation mismatches
-                sin_dec = sin_alt * sin_lat + cos_alt * cos_lat * cos_az
-                cos_dec = math.cos(math.asin(sin_dec))
-
-                ha = math.acos((sin_alt - sin_lat * sin_dec) / (cos_lat * cos_dec))
-
+                timenow = Time(datetime.datetime.utcnow(), scale='utc', location=SITE_LOCATION)
+                # pylint: disable=no-member
                 data.update({
                     'ra': self._current_ra,
                     'dec': self._current_dec,
                     'alt': self._current_alt,
                     'az': self._current_az,
-                    'ha': ha,
-                    'site_latitude': SITE_LATITUDE,
-                    'site_longitude': SITE_LONGITUDE,
-                    'site_elevation': SITE_ELEVATION,
+                    'lst': timenow.sidereal_time('apparent'),
+                    'site_latitude': SITE_LOCATION.latitude.rad,
+                    'site_longitude': SITE_LOCATION.longitude.rad,
+                    'site_elevation': float(SITE_LOCATION.height / u.m),
                 })
-
+                # pylint: enable=no-member
         return data
 
     @Pyro4.expose
