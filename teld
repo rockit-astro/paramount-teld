@@ -491,6 +491,18 @@ class TelescopeDaemon:
             return self.__slew((alt_radians, az_radians), tracking=False, altaz=True)
 
     @Pyro4.expose
+    def track_altaz(self, alt_radians, az_radians):
+        """Moves the telescope to a target and starts tracking"""
+        with TryLock(self._command_lock) as success:
+            if not success:
+                return CommandStatus.Blocked
+
+            if self._state < TelescopeState.Stopped:
+                return CommandStatus.TelescopeNotEnabled
+
+            return self.__slew((alt_radians, az_radians), tracking=True, altaz=True)
+
+    @Pyro4.expose
     def slew_radec(self, ra_radians, dec_radians):
         """Moves the telescope to a target"""
         with TryLock(self._command_lock) as success:
