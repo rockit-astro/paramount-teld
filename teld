@@ -380,8 +380,8 @@ class TelescopeDaemon:
                     'az': self._current_az,
                     'lst': timenow.sidereal_time('apparent').rad,
                     'moon_separation': pointing.separation(get_moon(timenow)).rad,
-                    'site_latitude': SITE_LOCATION.latitude.rad,
-                    'site_longitude': SITE_LOCATION.longitude.rad,
+                    'site_latitude': SITE_LOCATION.lat.rad,
+                    'site_longitude': SITE_LOCATION.lon.rad,
                     'site_elevation': float(SITE_LOCATION.height / u.m),
                 })
                 # pylint: enable=no-member
