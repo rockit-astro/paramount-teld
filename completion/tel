@@ -5,7 +5,7 @@ _tel()
     COMPREPLY=()
     cur="${COMP_WORDS[COMP_CWORD]}"
     prev="${COMP_WORDS[COMP_CWORD-1]}"
-    opts="status park slew horizon track offset stop init kill reboot"
+    opts="status park slew rates horizon track offset stop init kill reboot"
 
     case "${prev}" in
         park)
