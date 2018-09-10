@@ -19,6 +19,7 @@
 
 # pylint: disable=invalid-name
 # pylint: disable=too-many-locals
+# pylint: disable=too-many-return-statements
 
 import math
 import os
@@ -176,8 +177,9 @@ def slew(args):
 
 def track(args):
     """Slews the telescope to a specified RA,Dec position and begins tracking"""
-    if len(args) != 2:
-        print('usage: {} track <HH:MM:SS.S> <DD:MM:SS.S>'.format(SCRIPT_NAME))
+    if len(args) != 2 and len(args) != 4:
+        print('usage: {} track <HH:MM:SS.S> <DD:MM:SS.S> [<delta-ra> <delta-dec>]'.format(
+            SCRIPT_NAME))
         return -1
 
     try:
@@ -192,8 +194,24 @@ def track(args):
         print('error: failed to parse \'' + args[1] + '\' as a DD:MM:SS.S declination.')
         return -1
 
+    if len(args) == 4:
+        try:
+            delta_ra_arcsec_per_sec = float(args[2])
+        except ValueError:
+            print('error: failed to parse \'' + args[2] + '\' as a number.')
+            return -1
+
+        try:
+            delta_dec_arcsec_per_sec = float(args[3])
+        except ValueError:
+            print('error: failed to parse \'' + args[3] + '\' as a number.')
+            return -1
+
     ping_teld()
     with daemons.rasa_telescope.connect(timeout=0) as teld:
+        if len(args) == 4:
+            return teld.track_radec(ra_radians, dec_radians,
+                                    (delta_ra_arcsec_per_sec, delta_dec_arcsec_per_sec))
         return teld.track_radec(ra_radians, dec_radians)
 
 def offset(args):
@@ -218,6 +236,31 @@ def offset(args):
     with daemons.rasa_telescope.connect(timeout=0) as teld:
         return teld.offset_radec(offset_ra_radians, offset_dec_radians)
 
+def rates(args):
+    """Sets a custom tracking rate"""
+    if len(args) == 1 and args[0] == 'sidereal':
+        with daemons.rasa_telescope.connect() as teld:
+            return teld.track_sidereal()
+
+    if len(args) != 2:
+        print('usage: {} offset [<ra arcsec/sec> <dec arcsec/sec>|sidereal]'.format(SCRIPT_NAME))
+        return -1
+
+    try:
+        ra_arcsec_per_sec = float(args[0])
+    except ValueError:
+        print('error: failed to parse \'' + args[0] + '\' as a tracking rate.')
+        return -1
+
+    try:
+        dec_arcsec_per_sec = float(args[1])
+    except ValueError:
+        print('error: failed to parse \'' + args[1] + '\' as a tracking rate.')
+        return -1
+
+    with daemons.rasa_telescope.connect() as teld:
+        return teld.track_rates(ra_arcsec_per_sec, dec_arcsec_per_sec)
+
 def status():
     """Reports the current telescope status"""
     ping_teld()
@@ -237,6 +280,8 @@ def status():
     alt_desc = FMT_BOLD + sexagesimal(math.degrees(data['alt'])) + FMT_CLEAR
     az_desc = FMT_BOLD + sexagesimal(math.degrees(data['az'])) + FMT_CLEAR
     lst_desc = FMT_BOLD + sexagesimal(data['lst'] * 12 / math.pi) + FMT_CLEAR
+    ra_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['ra_rate']) + FMT_CLEAR
+    dec_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['dec_rate']) + FMT_CLEAR
     moon_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['moon_separation'])) + FMT_CLEAR
     sun_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['sun_separation'])) + FMT_CLEAR
 
@@ -244,6 +289,9 @@ def status():
     print('   LST is ' + lst_desc)
     print('   RA is ' + ra_desc)
     print('   Dec is ' + dec_desc)
+    if data['state'] == TelescopeState.Tracking:
+        print('   RA rate is ' + ra_rate_desc)
+        print('   Dec rate is ' + dec_rate_desc)
     print('   Altitude is ' + alt_desc)
     print('   Azimuth is ' + az_desc)
     print('   Moon separation is ' + moon_desc)
@@ -293,6 +341,7 @@ def print_usage():
     print('   horizon   slew the telescope to a given Alt, Az')
     print('   track     slew the telescope to a given RA, Dec and track the target')
     print('   offset    offset the telescope by a given RA, Dec')
+    print('   rates     set a custom tracking rate')
     print('   stop      immediately stop any telescope movement')
     print()
     print('engineering commands:')
@@ -316,6 +365,8 @@ if __name__ == '__main__':
         run_command(lambda: track(sys.argv[2:]))
     elif sys.argv[1] == 'offset':
         run_command(lambda: offset(sys.argv[2:]))
+    elif sys.argv[1] == 'rates':
+        run_command(lambda: rates(sys.argv[2:]))
     elif sys.argv[1] == 'status':
         run_command(status)
     elif sys.argv[1] == 'stop':
