@@ -1,12 +1,12 @@
 Name:      rasa-telescope-client
-Version:   1.0.3
+Version:   1.1.0
 Release:   0
 Url:       https://github.com/warwick-one-metre/rasa-teld
 Summary:   Telescope control client for the RASA prototype telescope.
 License:   GPL-3.0
 Group:     Unspecified
 BuildArch: noarch
-Requires:  python34, python34-Pyro4, python34-warwick-observatory-common, python34-warwick-rasa-telescope
+Requires:  python36, python36-Pyro4, python36-warwick-observatory-common, python36-warwick-rasa-telescope
 
 %description
 Part of the observatory software for the RASA prototype telescope.
