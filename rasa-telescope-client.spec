@@ -1,5 +1,5 @@
 Name:      rasa-telescope-client
-Version:   1.1.0
+Version:   1.1.1
 Release:   0
 Url:       https://github.com/warwick-one-metre/rasa-teld
 Summary:   Telescope control client for the RASA prototype telescope.
