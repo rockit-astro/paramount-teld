@@ -380,7 +380,7 @@ class TelescopeDaemon:
                     'az': self._current_az,
                     'lst': timenow.sidereal_time('apparent').rad,
                     'moon_separation': get_moon(timenow).separation(pointing).rad,
-                    'solar_phase_angle': (180 * u.degree - get_sun(timenow).separation(pointing)).rad,
+                    'sun_separation': get_sun(timenow).separation(pointing).rad,
                     'site_latitude': SITE_LOCATION.lat.rad,
                     'site_longitude': SITE_LOCATION.lon.rad,
                     'site_elevation': float(SITE_LOCATION.height / u.m),
