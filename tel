@@ -238,6 +238,7 @@ def status():
     az_desc = FMT_BOLD + sexagesimal(math.degrees(data['az'])) + FMT_CLEAR
     lst_desc = FMT_BOLD + sexagesimal(data['lst'] * 12 / math.pi) + FMT_CLEAR
     moon_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['moon_separation'])) + FMT_CLEAR
+    solar_phase_angle_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['solar_phase_angle'])) + FMT_CLEAR
 
     print('   Telescope is {}'.format(state_desc))
     print('   LST is ' + lst_desc)
@@ -246,6 +247,7 @@ def status():
     print('   Altitude is ' + alt_desc)
     print('   Azimuth is ' + az_desc)
     print('   Moon separation is ' + moon_desc)
+    print('   Solar phase angle is ' + solar_phase_angle_desc)
 
     return 0
 
