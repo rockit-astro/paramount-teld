@@ -125,6 +125,7 @@ class TelescopeDaemon:
         # Must be initialized and used only from the tel thread
         self._telescope = None
         self._thesky = None
+        self._utils = None
 
         # Status code to return from initialization
         self._initialization_status = CommandStatus.Failed
@@ -164,18 +165,8 @@ class TelescopeDaemon:
                     self._telescope.GetAzAlt()
 
                     # Convert apparent place (JNow) to J2000
-                    # pylint: disable=no-member
-                    now = Time.now()
-                    radec_apparent = SkyCoord(self._telescope.dRA * u.hourangle,
-                                              self._telescope.dDec * u.deg,
-                                              frame=FK5(equinox=now))
-
-                    eo = eo06a(*get_jd12(now, 'tt')) * u.rad
-                    cirs = SkyCoord(radec_apparent.ra + eo.to(u.deg),
-                                    radec_apparent.dec,
-                                    frame=CIRS(obstime=now))
-                    radec_j2000 = cirs.transform_to(FK5())
-                    # pylint: enable=no-member
+                    dOut0, dOut1 = self._utils.PrecessNowTo2000(self._telescope.dRA, self._telescope.dDec)
+                    radec_j2000 = SkyCoord(dOut0 * u.hourangle, dOut1 * u.deg)
 
                     self._current_ra = radec_j2000.ra.to(u.rad).value
                     self._current_dec = radec_j2000.dec.to(u.rad).value
@@ -245,6 +236,7 @@ class TelescopeDaemon:
         self._thesky = win32com.client.Dispatch("TheSky6.RASCOMTheSky")
         self._telescope = win32com.client.Dispatch("TheSky6.RASCOMTele")
         self._telescope.Asynchronous = True
+        self._utils = win32com.client.Dispatch("TheSky6.Utils")
 
         while True:
             if self._state == TelescopeState.Disabled and self._requested_active:
@@ -319,23 +311,14 @@ class TelescopeDaemon:
                             self._telescope.Jog(math.fabs(az), "L" if alt < 0 else "R")
                             self._requested_slew = None
                         elif slew.type == RequestedSlew.Equatorial:
-                            # Convert J2000 coords to apparent place (JNow)
-                            # pylint: disable=no-member
-                            now = Time.now()
                             radec_j2000 = SkyCoord(slew.a, slew.b, frame=J2000, unit="rad")
-                            radec_cirs = radec_j2000.transform_to(CIRS(obstime=now))
-
-                            # Equation of the origins
-                            eo = eo06a(*get_jd12(now, 'tt')) * u.rad
-                            radec_apparent = SkyCoord(
-                                (radec_cirs.ra - eo).deg * u.deg,
-                                radec_cirs.dec.deg * u.deg)
-
-                            ra = radec_apparent.ra.to(u.hourangle).value
-                            dec = radec_apparent.dec.to(u.deg).value
-                            # pylint: enable=no-member
+                            ra = radec_j2000.ra.to(u.hourangle).value
+                            dec = radec_j2000.dec.to(u.deg).value
                             print('Slew to RaDec', slew.a, slew.b)
-                            self._telescope.SlewToRaDec(ra, dec, "Target")
+
+                            # Convert J2000 coords to apparent place (JNow)
+                            dOut0, dOut1 = self._utils.Precess2000ToNow(ra, dec)
+                            self._telescope.SlewToRaDec(dOut0, dOut1, "Target")
                             self._requested_slew = None
                         elif slew.type == RequestedSlew.EquatorialOffsetFirst:
                             ra = math.degrees(slew.a) * 60
