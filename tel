@@ -25,9 +25,13 @@ import math
 import os
 import sys
 import time
-import Pyro4
-from warwick.observatory.common import daemons
+import socket
+import struct
 from warwick.rasa.telescope import CommandStatus, TelescopeState, PierSide
+from warwick.observatory.common import daemons
+
+TELD_HOST = daemons.rasa_telescope.host
+TELD_PORT = daemons.rasa_telescope.port
 
 # This timeout is used for an initial ping before running the real command
 # The real commands may take much longer than this, so we can't apply the timeout there.
@@ -37,9 +41,8 @@ SCRIPT_NAME = os.path.basename(sys.argv[0])
 
 # Positions in degrees (alt, az)
 PARK_POSITIONS = {
-    'stow': (math.radians(1), math.radians(300),
-             'general purpose park protecting the mirror and instrument'),
-    'zenith': (math.pi / 2, 0, 'park at zenith for maintenance tasks'),
+    'stow': (1, 300, 'general purpose park protecting the mirror and instrument'),
+    'zenith': (90, 0, 'park at zenith for maintenance tasks'),
 }
 
 FMT_YELLOW = '\033[93m'
@@ -56,7 +59,15 @@ TELESCOPE_STATE_FORMATS = {
     4: FMT_BOLD + FMT_GREEN
 }
 
-sys.excepthook = Pyro4.util.excepthook
+TWO_DOUBLES = struct.Struct('dd')
+FOUR_DOUBLES = struct.Struct('dddd')
+TEL_STATUS = struct.Struct('cdddddddc')
+DOME_STATUS = struct.Struct('cc')
+
+
+def bytes_to_status(status):
+    return int.from_bytes(status, sys.byteorder)
+
 
 def run_command(command):
     """Prints the message associated with a status code and returns the code"""
@@ -69,13 +80,16 @@ def run_command(command):
         # Report successful stop
         if ret == 0:
             ret = -100
-    except Pyro4.errors.CommunicationError:
+    except socket.timeout:
+        ret = -101
+    except ConnectionRefusedError:
         ret = -101
 
     # Print message associated with error codes, except for -1 (error handled locally)
     if ret != -1 and ret != 0:
         print(CommandStatus.message(ret))
     sys.exit(ret)
+
 
 def sexagesimal(angle):
     """Formats a decimal number in sexagesimal format"""
@@ -92,6 +106,7 @@ def sexagesimal(angle):
 
     return '{:d}:{:02d}:{:05.2f}'.format(degrees, minutes, seconds)
 
+
 def parse_sexagesimal(string):
     """Converts a sexagesimal string to decimal"""
     parts = string.split(':')
@@ -104,13 +119,16 @@ def parse_sexagesimal(string):
 
     return a + b / 60 + c / 3600
 
+
 def parse_ra(ra_string):
-    """Converts a HH:MM:SS Dec string to radians"""
-    return parse_sexagesimal(ra_string) * math.pi / 12
+    """Converts a HH:MM:SS Dec string to degrees"""
+    return parse_sexagesimal(ra_string) * 15
+
 
 def parse_dec(dec_string):
-    """Converts a DD:MM:SS Dec string to radians"""
-    return parse_sexagesimal(dec_string) * math.pi / 180
+    """Converts a DD:MM:SS Dec string to degrees"""
+    return parse_sexagesimal(dec_string)
+
 
 def park(args):
     """Slews the telescope to a named park position"""
@@ -119,10 +137,13 @@ def park(args):
             print('error: unknown park position \'' + args[0] + '\'')
             return -1
 
-        alt_radians, az_radians, _ = PARK_POSITIONS.get(args[0])
+        alt_degrees, az_degrees, _ = PARK_POSITIONS.get(args[0])
         ping_teld()
-        with daemons.rasa_telescope.connect(timeout=0) as teld:
-            return teld.slew_altaz(alt_radians, az_radians)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+            teld.connect((TELD_HOST, TELD_PORT))
+            teld.sendall(b'\x05')
+            teld.sendall(TWO_DOUBLES.pack(alt_degrees, az_degrees))
+            return bytes_to_status(teld.recv(1))
 
     print('usage: {} park <position>'.format(SCRIPT_NAME))
     print()
@@ -131,6 +152,7 @@ def park(args):
     print()
     return -1
 
+
 def horizon(args):
     """Slews the telescope to a specified Alt,Az position"""
     if len(args) != 2:
@@ -138,42 +160,24 @@ def horizon(args):
         return -1
 
     try:
-        alt_radians = parse_dec(args[0])
+        alt_degrees = parse_dec(args[0])
     except ValueError:
         print('error: failed to parse \'' + args[0] + '\' as a DD:MM:SS.S altitude.')
         return -1
 
     try:
-        az_radians = parse_dec(args[1])
+        az_degrees = parse_dec(args[1])
     except ValueError:
         print('error: failed to parse \'' + args[1] + '\' as a DD:MM:SS.S azimuth.')
         return -1
 
     ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        return teld.slew_altaz(alt_radians, az_radians)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x05')
+        teld.sendall(TWO_DOUBLES.pack(alt_degrees, az_degrees))
+        return bytes_to_status(teld.recv(1))
 
-def slew(args):
-    """Slews the telescope to a specified RA,Dec position"""
-    if len(args) != 2:
-        print('usage: {} slew <HH:MM:SS.S> <DD:MM:SS.S>'.format(SCRIPT_NAME))
-        return -1
-
-    try:
-        ra_radians = parse_ra(args[0])
-    except ValueError:
-        print('error: failed to parse \'' + args[0] + '\' as a HH:MM:SS.S right ascension.')
-        return -1
-
-    try:
-        dec_radians = parse_dec(args[1])
-    except ValueError:
-        print('error: failed to parse \'' + args[1] + '\' as a DD:MM:SS.S declination.')
-        return -1
-
-    ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        return teld.slew_radec(ra_radians, dec_radians)
 
 def track(args):
     """Slews the telescope to a specified RA,Dec position and begins tracking"""
@@ -183,17 +187,18 @@ def track(args):
         return -1
 
     try:
-        ra_radians = parse_ra(args[0])
+        ra_degrees = parse_ra(args[0])
     except ValueError:
         print('error: failed to parse \'' + args[0] + '\' as a HH:MM:SS.S right ascension.')
         return -1
 
     try:
-        dec_radians = parse_dec(args[1])
+        dec_degrees = parse_dec(args[1])
     except ValueError:
         print('error: failed to parse \'' + args[1] + '\' as a DD:MM:SS.S declination.')
         return -1
 
+    delta_ra_arcsec_per_sec = delta_dec_arcsec_per_sec = 0
     if len(args) == 4:
         try:
             delta_ra_arcsec_per_sec = float(args[2])
@@ -208,11 +213,11 @@ def track(args):
             return -1
 
     ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        if len(args) == 4:
-            return teld.track_radec(ra_radians, dec_radians,
-                                    (delta_ra_arcsec_per_sec, delta_dec_arcsec_per_sec))
-        return teld.track_radec(ra_radians, dec_radians)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x06')
+        teld.sendall(FOUR_DOUBLES.pack(ra_degrees, dec_degrees, delta_ra_arcsec_per_sec, delta_dec_arcsec_per_sec))
+        return bytes_to_status(teld.recv(1))
 
 def offset(args):
     """Offsets the telescope by a specified delta RA,Dec"""
@@ -221,26 +226,34 @@ def offset(args):
         return -1
 
     try:
-        offset_ra_radians = parse_ra(args[0])
+        offset_ra_degrees = parse_ra(args[0])
     except ValueError:
         print('error: failed to parse \'' + args[0] + '\' as a HH:MM:SS.S right ascension.')
         return -1
 
     try:
-        offset_dec_radians = parse_dec(args[1])
+        offset_dec_degrees = parse_dec(args[1])
     except ValueError:
         print('error: failed to parse \'' + args[1] + '\' as a DD:MM:SS.S declination.')
         return -1
 
     ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        return teld.offset_radec(offset_ra_radians, offset_dec_radians)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x07')
+        teld.sendall(TWO_DOUBLES.pack(offset_ra_degrees, offset_dec_degrees))
+        return bytes_to_status(teld.recv(1))
+
 
 def rates(args):
     """Sets a custom tracking rate"""
     if len(args) == 1 and args[0] == 'sidereal':
-        with daemons.rasa_telescope.connect() as teld:
-            return teld.track_sidereal()
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+            teld.settimeout(5)
+            teld.connect((TELD_HOST, TELD_PORT))
+            teld.sendall(b'\x08')
+            teld.sendall(TWO_DOUBLES.pack(0, 0))
+            return bytes_to_status(teld.recv(1))
 
     if len(args) != 2:
         print('usage: {} offset [<ra arcsec/sec> <dec arcsec/sec>|sidereal]'.format(SCRIPT_NAME))
@@ -258,14 +271,41 @@ def rates(args):
         print('error: failed to parse \'' + args[1] + '\' as a tracking rate.')
         return -1
 
-    with daemons.rasa_telescope.connect() as teld:
-        return teld.track_rates(ra_arcsec_per_sec, dec_arcsec_per_sec)
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.settimeout(5)
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x08')
+        teld.sendall(TWO_DOUBLES.pack(ra_arcsec_per_sec, dec_arcsec_per_sec))
+        return bytes_to_status(teld.recv(1))
+
 
 def status():
     """Reports the current telescope status"""
-    ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        data = teld.report_status()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.settimeout(5)
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x09')
+        status = teld.recv(1)
+        if len(status) == 0:
+            return 1
+
+        if int.from_bytes(status, sys.byteorder) == 0:
+            data = TEL_STATUS.unpack(teld.recv(TEL_STATUS.size))
+            data = {
+                'state': bytes_to_status(data[0]),
+                'alt': data[1],
+                'az': data[2],
+                'ra': data[3],
+                'dec': data[4],
+                'ra_rate': data[5],
+                'dec_rate': data[6],
+                'ha': data[7],
+                'pier_side': bytes_to_status(data[8])
+            }
+        else:
+            data = {
+                'state': 0
+            }
 
     state_desc = TELESCOPE_STATE_FORMATS[data['state']] + TelescopeState.Names[data['state']] \
         + FMT_CLEAR
@@ -275,20 +315,16 @@ def status():
         print('   Telescope is {}'.format(state_desc))
         return 0
 
-    ra_desc = FMT_BOLD + sexagesimal(data['ra'] * 12 / math.pi) + FMT_CLEAR
-    dec_desc = FMT_BOLD + sexagesimal(math.degrees(data['dec'])) + FMT_CLEAR
-    alt_desc = FMT_BOLD + sexagesimal(math.degrees(data['alt'])) + FMT_CLEAR
-    ha_desc = FMT_BOLD + sexagesimal(data['ha'] * 12 / math.pi) + FMT_CLEAR
-    az_desc = FMT_BOLD + sexagesimal(math.degrees(data['az'])) + FMT_CLEAR
-    lst_desc = FMT_BOLD + sexagesimal(data['lst'] * 12 / math.pi) + FMT_CLEAR
+    ra_desc = FMT_BOLD + sexagesimal(data['ra'] / 15) + FMT_CLEAR
+    dec_desc = FMT_BOLD + sexagesimal(data['dec']) + FMT_CLEAR
+    alt_desc = FMT_BOLD + sexagesimal(data['alt']) + FMT_CLEAR
+    az_desc = FMT_BOLD + sexagesimal(data['az']) + FMT_CLEAR
+    ha_desc = FMT_BOLD + sexagesimal(data['ha'] / 15) + FMT_CLEAR
+
     ra_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['ra_rate']) + FMT_CLEAR
     dec_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['dec_rate']) + FMT_CLEAR
-    moon_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['moon_separation'])) + FMT_CLEAR
-    sun_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['sun_separation'])) + FMT_CLEAR
     pier_desc = FMT_BOLD + PierSide.Names[data['pier_side']] + FMT_CLEAR
-
     print('   Telescope is {}'.format(state_desc))
-    print('   LST is ' + lst_desc)
     print('   RA is ' + ra_desc)
     print('   Dec is ' + dec_desc)
     print('   HA is ' + ha_desc)
@@ -298,28 +334,55 @@ def status():
     print('   Altitude is ' + alt_desc)
     print('   Azimuth is ' + az_desc)
     print('   Payload is on ' + pier_desc + ' side')
-    print('   Moon separation is ' + moon_desc)
-    print('   Sun separation is ' + sun_desc)
 
     return 0
+
+
+def dome():
+    """Reports the current dome status"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.settimeout(5)
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x0A')
+        status = teld.recv(1)
+        if len(status) == 0:
+            return 1
+
+        if int.from_bytes(status, sys.byteorder) == 0:
+            dome, environment = DOME_STATUS.unpack(teld.recv(DOME_STATUS.size))
+            print('Dome is ' + ['Closed', 'Open', 'Moving', 'Timeout'][bytes_to_status(dome)])
+            print('Environment is {}'.format('SAFE' if bytes_to_status(environment) else 'UNSAFE'))
+            return 0
+
+        return 1
+
 
 def stop():
     """Stops any active telescope movement"""
     ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        return teld.stop()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x04')
+        return bytes_to_status(teld.recv(1))
+
 
 def initialize():
     """Enables and homes the mount"""
     ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        return teld.initialize()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x02')
+        return bytes_to_status(teld.recv(1))
+
 
 def shutdown():
     """Disables the mount"""
     ping_teld()
-    with daemons.rasa_telescope.connect(timeout=0) as teld:
-        return teld.shutdown()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x03')
+        return bytes_to_status(teld.recv(1))
+
 
 def reboot():
     """Reboots the mount"""
@@ -327,10 +390,15 @@ def reboot():
     time.sleep(5)
     return initialize()
 
+
 def ping_teld():
     """Check that teld is alive"""
-    with daemons.rasa_telescope.connect(timeout=TEL_PING_TIMEOUT) as teld:
-        teld.ping()
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as teld:
+        teld.settimeout(TEL_PING_TIMEOUT)
+        teld.connect((TELD_HOST, TELD_PORT))
+        teld.sendall(b'\x01')
+        bytes_to_status(teld.recv(1))
+
 
 def print_usage():
     """Prints the utility help"""
@@ -341,10 +409,9 @@ def print_usage():
     print('   park      park the telescope in a named position')
     print()
     print('observing commands:')
-    print('   slew      slew the telescope to a given RA, Dec')
     print('   horizon   slew the telescope to a given Alt, Az')
     print('   track     slew the telescope to a given RA, Dec and track the target')
-    print('   offset    offset the telescope by a given RA, Dec')
+    print('   offset    offset the telescope by a given delta RA, Dec')
     print('   rates     set a custom tracking rate')
     print('   stop      immediately stop any telescope movement')
     print()
@@ -356,13 +423,12 @@ def print_usage():
 
     return 0
 
+
 if __name__ == '__main__':
     if len(sys.argv) == 1:
         sys.exit(print_usage())
     if sys.argv[1] == 'park':
         run_command(lambda: park(sys.argv[2:]))
-    elif sys.argv[1] == 'slew':
-        run_command(lambda: slew(sys.argv[2:]))
     elif sys.argv[1] == 'horizon':
         run_command(lambda: horizon(sys.argv[2:]))
     elif sys.argv[1] == 'track':
@@ -373,6 +439,8 @@ if __name__ == '__main__':
         run_command(lambda: rates(sys.argv[2:]))
     elif sys.argv[1] == 'status':
         run_command(status)
+    elif sys.argv[1] == 'dome':
+        run_command(dome)
     elif sys.argv[1] == 'stop':
         run_command(stop)
     elif sys.argv[1] == 'init':

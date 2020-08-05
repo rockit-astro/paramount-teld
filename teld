@@ -28,13 +28,17 @@
 # pylint: disable=too-few-public-methods
 
 import datetime
+import socket
+import struct
 import sys
 import threading
 import time
 import traceback
+
 from astropy.coordinates import Angle, SkyCoord, EarthLocation, get_moon, get_sun
 from astropy.time import Time
 import astropy.units as u
+import numpy as np
 import Pyro4
 
 # pylint: disable=import-error
@@ -67,6 +71,11 @@ SITE_LOCATION = EarthLocation(
     lon=-17.8796168*u.deg,
     height=2387*u.m)
 # pylint: enable=no-member
+
+TWO_DOUBLES = struct.Struct('dd')
+FOUR_DOUBLES = struct.Struct('dddd')
+TEL_STATUS = struct.Struct('cdddddddc')
+DOME_STATUS = struct.Struct('cc')
 
 
 class TelError:
@@ -676,5 +685,137 @@ class TelescopeDaemon:
         return CommandStatus.Succeeded
     # pylint: enable=no-self-use
 
+
+def status_to_bytes(status):
+    return status.to_bytes(1, sys.byteorder)
+
+
+class DomeShutterStatus:
+    """Status of the dome shutters"""
+    Closed, Open, PartiallyOpen, Opening, Closing, HeartbeatMonitorForceClosing = range(6)
+
+class DomeHeartbeatStatus:
+    """Status of the dome heartbeat monitoring"""
+    Disabled, Active, TrippedClosing, TrippedIdle, Unavailable = range(5)
+
+class DomeStatus:
+    """Aggregated dome status"""
+    Closed, Open, Moving, Timeout = range(4)
+    Names = ['Closed', 'Open', 'Moving', 'Timeout']
+
+    @classmethod
+    def parse(cls, status):
+        """Parses the return value from dome.status() into a DomeStatus"""
+        if status['heartbeat_status'] in [DomeHeartbeatStatus.TrippedClosing,
+                                          DomeHeartbeatStatus.TrippedIdle]:
+            return DomeStatus.Timeout
+
+        if status['shutter_a'] == DomeShutterStatus.Closed and \
+                status['shutter_b'] == DomeShutterStatus.Closed:
+            return DomeStatus.Closed
+
+        if status['shutter_a'] in [DomeShutterStatus.Opening, DomeShutterStatus.Closing] or \
+                status['shutter_b'] in [DomeShutterStatus.Opening, DomeShutterStatus.Closing]:
+            return DomeStatus.Moving
+
+        return DomeStatus.Open
+
+
+def client_listener(daemon, client):
+    with client:
+        try:
+            while True:
+                command = client.recv(1)
+                if not command:
+                    break
+
+                if command == b'\x01':    # Ping
+                    client.sendall(status_to_bytes(daemon.ping()))
+                elif command == b'\x02':  # Initialize
+                    client.sendall(status_to_bytes(daemon.initialize()))
+                elif command == b'\x03':  # Shutdown
+                    client.sendall(status_to_bytes(daemon.shutdown()))
+                elif command == b'\x04':  # Stop
+                    client.sendall(status_to_bytes(daemon.stop()))
+                elif command == b'\x05':  # Slew AltAz
+                    alt_degrees, az_degrees = TWO_DOUBLES.unpack(client.recv(TWO_DOUBLES.size))
+                    client.sendall(status_to_bytes(daemon.slew_altaz(
+                        np.radians(alt_degrees),
+                        np.radians(az_degrees)
+                    )))
+                elif command == b'\x06':  # Track RADecRates
+                    # Read alt (decimal degrees)
+                    ra_degrees, dec_degrees, ra_arcsec_per_sec, dec_arcsec_per_sec = FOUR_DOUBLES.unpack(client.recv(FOUR_DOUBLES.size))
+                    client.sendall(status_to_bytes(daemon.track_radec(
+                        np.radians(ra_degrees),
+                        np.radians(dec_degrees),
+                        (ra_arcsec_per_sec, dec_arcsec_per_sec)
+                    )))
+                elif command == b'\x07':  # Offset RADec
+                    offset_ra_degrees, offset_dec_degrees = TWO_DOUBLES.unpack(client.recv(TWO_DOUBLES.size))
+                    client.sendall(status_to_bytes(daemon.offset_radec(
+                        np.radians(offset_ra_degrees),
+                        np.radians(offset_dec_degrees)
+                    )))
+                elif command == b'\x08':  # Update RADec rates
+                    ra_arcsec_per_sec, dec_arcsec_per_sec = TWO_DOUBLES.unpack(client.recv(TWO_DOUBLES.size))
+                    client.sendall(status_to_bytes(daemon.track_rates(
+                        ra_arcsec_per_sec,
+                        dec_arcsec_per_sec
+                    )))
+                elif command == b'\x09':  # Query telescope status
+                    status = daemon.report_status()
+                    client.sendall(status_to_bytes(CommandStatus.Succeeded))
+                    client.sendall(TEL_STATUS.pack(
+                        status_to_bytes(status.get('state', 0)),
+                        np.degrees(status.get('alt', 0)),
+                        np.degrees(status.get('az', 0)),
+                        np.degrees(status.get('ra', 0)),
+                        np.degrees(status.get('dec', 0)),
+                        status.get('ra_rate', 0),
+                        status.get('dec_rate', 0),
+                        np.degrees(status.get('ha', 0)),
+                        status_to_bytes(status.get('pier_side', 0))
+                    ))
+                elif command == b'\x0A':  # Query dome status
+                    try:
+                        with daemons.rasa_operations.connect() as ops:
+                            status = ops.status()
+                            environment_safe = status.get('environment', {}).get('safe', False)
+
+                        with daemons.rasa_dome.connect() as dome:
+                            dome_status = DomeStatus.parse(dome.status())
+
+                        client.sendall(status_to_bytes(CommandStatus.Succeeded))
+                        client.sendall(DOME_STATUS.pack(
+                            status_to_bytes(dome_status),
+                            status_to_bytes(environment_safe)
+                        ))
+                    except Pyro4.errors.CommunicationError:
+                        print('error: unable to communicate with the operations daemon')
+                        client.sendall(status_to_bytes(CommandStatus.Failed))
+
+                    client.sendall(status_to_bytes(daemon.ping()))
+
+                else:
+                    client.sendall(status_to_bytes(CommandStatus.Failed))
+
+        except Exception:
+            print('exception')
+            traceback.print_exc(file=sys.stdout)
+            log.error('rasa_teld', 'Comms error')
+
+
+def listen(daemon):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind((daemons.rasa_telescope.host, daemons.rasa_telescope.port))
+        listener.listen()
+        while True:
+            client, _ = listener.accept()
+            client_thread = threading.Thread(target=client_listener, args=(daemon, client))
+            client_thread.daemon = True
+            client_thread.start()
+
+
 if __name__ == '__main__':
-    daemons.rasa_telescope.launch(TelescopeDaemon())
+    listen(TelescopeDaemon())
