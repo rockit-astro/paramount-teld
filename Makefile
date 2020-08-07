@@ -7,7 +7,7 @@ RPMBUILD = rpmbuild --define "_topdir %(pwd)/build" \
 all:
 	mkdir -p build
 	${RPMBUILD} -ba rasa-telescope-client.spec
-	${RPMBUILD} -ba python36-warwick-rasa-telescope.spec
+	${RPMBUILD} -ba python3-warwick-rasa-telescope.spec
 	mv build/noarch/*.rpm .
 	rm -rf build
 

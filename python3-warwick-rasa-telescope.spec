@@ -1,4 +1,4 @@
-Name:           python36-warwick-rasa-telescope
+Name:           python3-warwick-rasa-telescope
 Version:        1.0.0
 Release:        0
 License:        GPL3
