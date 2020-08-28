@@ -275,11 +275,18 @@ def status():
         print('   Telescope is {}'.format(state_desc))
         return 0
 
+    ha = (data['lst'] - data['ra'])  * 12 / math.pi
+    while ha < -12:
+        ha += 24
+    while ha > 12:
+        ha -= 24
+
     ra_desc = FMT_BOLD + sexagesimal(data['ra'] * 12 / math.pi) + FMT_CLEAR
     dec_desc = FMT_BOLD + sexagesimal(math.degrees(data['dec'])) + FMT_CLEAR
     alt_desc = FMT_BOLD + sexagesimal(math.degrees(data['alt'])) + FMT_CLEAR
+    ha_desc = FMT_BOLD + sexagesimal((data['lst'] - data['ra']) * 12 / math.pi) + FMT_CLEAR
     az_desc = FMT_BOLD + sexagesimal(math.degrees(data['az'])) + FMT_CLEAR
-    lst_desc = FMT_BOLD + sexagesimal(data['lst'] * 12 / math.pi) + FMT_CLEAR
+    lst_desc = FMT_BOLD + sexagesimal(ha) + FMT_CLEAR
     ra_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['ra_rate']) + FMT_CLEAR
     dec_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['dec_rate']) + FMT_CLEAR
     moon_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['moon_separation'])) + FMT_CLEAR
@@ -289,6 +296,7 @@ def status():
     print('   LST is ' + lst_desc)
     print('   RA is ' + ra_desc)
     print('   Dec is ' + dec_desc)
+    print('   HA is ' + ha_desc)
     if data['state'] == TelescopeState.Tracking:
         print('   RA rate is ' + ra_rate_desc)
         print('   Dec rate is ' + dec_rate_desc)
