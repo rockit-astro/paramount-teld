@@ -68,3 +68,8 @@ class TelescopeState:
     """Telescope status"""
     Disabled, Initializing, Slewing, Stopped, Tracking = range(5)
     Names = ['DISABLED', 'INITIALIZING', 'SLEWING', 'STOPPED', 'TRACKING']
+
+class PierSide:
+    """Telescope status"""
+    Unknown, East, West = range(3)
+    Names = ['UNKNOWN', 'EAST', 'WEST']

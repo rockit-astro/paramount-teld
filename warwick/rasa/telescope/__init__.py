@@ -16,4 +16,4 @@
 
 """rasa-teld common code"""
 
-from .constants import CommandStatus, TelescopeState
+from .constants import CommandStatus, TelescopeState, PierSide

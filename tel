@@ -27,7 +27,7 @@ import sys
 import time
 import Pyro4
 from warwick.observatory.common import daemons
-from warwick.rasa.telescope import CommandStatus, TelescopeState
+from warwick.rasa.telescope import CommandStatus, TelescopeState, PierSide
 
 # This timeout is used for an initial ping before running the real command
 # The real commands may take much longer than this, so we can't apply the timeout there.
@@ -275,22 +275,17 @@ def status():
         print('   Telescope is {}'.format(state_desc))
         return 0
 
-    ha = (data['lst'] - data['ra'])  * 12 / math.pi
-    while ha < -12:
-        ha += 24
-    while ha > 12:
-        ha -= 24
-
     ra_desc = FMT_BOLD + sexagesimal(data['ra'] * 12 / math.pi) + FMT_CLEAR
     dec_desc = FMT_BOLD + sexagesimal(math.degrees(data['dec'])) + FMT_CLEAR
     alt_desc = FMT_BOLD + sexagesimal(math.degrees(data['alt'])) + FMT_CLEAR
-    ha_desc = FMT_BOLD + sexagesimal((data['lst'] - data['ra']) * 12 / math.pi) + FMT_CLEAR
+    ha_desc = FMT_BOLD + sexagesimal(data['ha'] * 12 / math.pi) + FMT_CLEAR
     az_desc = FMT_BOLD + sexagesimal(math.degrees(data['az'])) + FMT_CLEAR
-    lst_desc = FMT_BOLD + sexagesimal(ha) + FMT_CLEAR
+    lst_desc = FMT_BOLD + sexagesimal(data['lst'] * 12 / math.pi) + FMT_CLEAR
     ra_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['ra_rate']) + FMT_CLEAR
     dec_rate_desc = FMT_BOLD + '{:.3f} arcsec/sec'.format(data['dec_rate']) + FMT_CLEAR
     moon_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['moon_separation'])) + FMT_CLEAR
     sun_desc = FMT_BOLD + '{:.0f}\u00B0'.format(math.degrees(data['sun_separation'])) + FMT_CLEAR
+    pier_desc = FMT_BOLD + PierSide.Names[data['pier_side']] + FMT_CLEAR
 
     print('   Telescope is {}'.format(state_desc))
     print('   LST is ' + lst_desc)
@@ -302,6 +297,7 @@ def status():
         print('   Dec rate is ' + dec_rate_desc)
     print('   Altitude is ' + alt_desc)
     print('   Azimuth is ' + az_desc)
+    print('   Payload is on ' + pier_desc + ' side')
     print('   Moon separation is ' + moon_desc)
     print('   Sun separation is ' + sun_desc)
 
