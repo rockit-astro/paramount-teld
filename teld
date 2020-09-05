@@ -378,6 +378,24 @@ class TelescopeDaemon:
 
             self.__tel_query_state()
 
+            # Stop tracking if the mount has crossed the meridian
+            if self._state == TelescopeState.Tracking and self._current_pier_side != PierSide.Unknown:
+                if abs(self._current_ha) < 5.5 * u.deg:
+                    if 0 <= self._current_ha < 6 * u.hourangle or self._current_ha <= -6 * u.hourangle:
+                        desired_pier_side = PierSide.East
+                    else:
+                        desired_pier_side = PierSide.West
+
+                    if desired_pier_side != self._current_pier_side:
+                        print('Stopped tracking on wrong side of pier')
+                        # Stop tracking immediately
+                        self.__tel_clear_custom_tracking(False)
+
+                        # Clean up remaining state on the next loop
+                        self._requested_stop = True
+                        self._requested_tracking = False
+                        self._requested_tracking_rates = None
+
             time.sleep(TELSTAT_QUERY_DELAY)
 
     @Pyro4.expose
