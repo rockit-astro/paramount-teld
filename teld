@@ -68,6 +68,7 @@ SITE_LOCATION = EarthLocation(
     height=2387*u.m)
 # pylint: enable=no-member
 
+
 class TelError:
     """Return code enum representing error states from the underlying controller"""
     NoError = 0
@@ -76,6 +77,7 @@ class TelError:
     SerialTimeout = 3
     SlewOutsideLimits = 4
     CommandInProgress = 5
+
 
 class RequestedSlew:
     """Represents a requested slew type and vector"""
@@ -86,6 +88,21 @@ class RequestedSlew:
         self.a = a
         self.b = b
         self.type = t
+
+
+class TrackingStationary:
+    pass
+
+
+class TrackingSidereal:
+    pass
+
+
+class TrackingNonSidereal:
+    def __init__(self, ra_rate, dec_rate):
+        self.ra_rate = ra_rate
+        self.dec_rate = dec_rate
+
 
 def parse_tel_exception(e):
     """Parses and returns a TelError value from a given exception"""
@@ -112,6 +129,7 @@ def parse_tel_exception(e):
     log.error('rasa_teld', 'Unknown error communicating with mount')
     return TelError.Other
 
+
 class TelescopeDaemon:
     """Daemon interface for Paramount subsystems"""
     def __init__(self):
@@ -137,8 +155,7 @@ class TelescopeDaemon:
         # Set by client threads to signal telescope init / shutdown
         self._requested_stop = False
         self._requested_active = False
-        self._requested_tracking = False
-        self._requested_tracking_rates = None
+        self._requested_tracking = TrackingStationary()
         self._requested_slew = None
 
         # Set by tel thread to indicate actual state
@@ -147,6 +164,7 @@ class TelescopeDaemon:
         self._current_lock = threading.Lock()
         self._current_ra = 0 * u.deg
         self._current_dec = 0 * u.deg
+        self._current_nonsidereal_tracking = False
         self._current_ra_rate = 0 * u.arcsec / u.s
         self._current_dec_rate = 0 * u.arcsec / u.s
         self._current_alt = 0 * u.deg
@@ -198,12 +216,12 @@ class TelescopeDaemon:
             parse_tel_exception(e)
             self._requested_active = False
 
-    def __tel_clear_custom_tracking(self, sidereal_tracking):
-        tracking = 1 if sidereal_tracking else 0
+    def __tel_disable_tracking(self):
         # The RA and Dec reported by GetRaDec are wrong unless we first zero then ignore the rates
-        self._telescope.SetTracking(tracking, 0, 0, 0)
-        self._telescope.SetTracking(tracking, 1, 0, 0)
+        self._telescope.SetTracking(0, 0, 0, 0)
+        self._telescope.SetTracking(0, 1, 0, 0)
         with self._current_lock:
+            self._current_nonsidereal_tracking = False
             self._current_ra_rate = 0 * u.arcsec / u.s
             self._current_dec_rate = 0 * u.arcsec / u.s
 
@@ -217,7 +235,7 @@ class TelescopeDaemon:
 
             # Home telescope
             self._telescope.FindHome()
-            self.__tel_clear_custom_tracking(False)
+            self.__tel_disable_tracking()
 
             self._current_pier_side = PierSide.East
             self._state = TelescopeState.Stopped
@@ -244,7 +262,7 @@ class TelescopeDaemon:
         log.info('rasa_teld', 'Shutting down mount')
         try:
             # Disable tracking and disconnect
-            self.__tel_clear_custom_tracking(False)
+            self.__tel_disable_tracking()
             self._thesky.DisconnectTelescope()
         except Exception as e:
             parse_tel_exception(e)
@@ -277,9 +295,10 @@ class TelescopeDaemon:
             if self._requested_stop:
                 try:
                     self._telescope.Abort()
-                    self.__tel_clear_custom_tracking(False)
+                    self.__tel_disable_tracking()
                     self._slew_aborted = True
                     self._requested_stop = False
+                    self._requested_tracking = TrackingStationary()
                 except Exception as e:
                     print('Failed to stop slew')
                     log.error('rasa_teld', 'Failed to stop slew')
@@ -311,20 +330,33 @@ class TelescopeDaemon:
                     self._requested_active = False
 
             with self._slew_lock:
+                # Take an atomic copy to guard against another thread changing the tracking rates under us
+                tracking = self._requested_tracking
                 try:
                     # IsTracking sometimes returns the wrong value, so reset it every tick
                     # This also acts as a heartbeat check, and will throw if the mount goes offline
-                    if self._requested_tracking_rates and len(self._requested_tracking_rates) == 2:
+                    if isinstance(tracking, TrackingNonSidereal):
                         self._telescope.SetTracking(
                             1, 0,
-                            self._requested_tracking_rates[0].to_value(u.arcsec / u.s),
-                            self._requested_tracking_rates[1].to_value(u.arcsec / u.s))
+                            tracking.ra_rate.to_value(u.arcsec / u.s),
+                            tracking.dec_rate.to_value(u.arcsec / u.s))
 
                         with self._current_lock:
-                            self._current_ra_rate = self._requested_tracking_rates[0]
-                            self._current_dec_rate = self._requested_tracking_rates[1]
+                            self._current_nonsidereal_tracking = True
+                            self._current_ra_rate = tracking.ra_rate
+                            self._current_dec_rate = tracking.dec_rate
                     else:
-                        self.__tel_clear_custom_tracking(self._requested_tracking)
+                        with self._current_lock:
+                            if self._current_nonsidereal_tracking:
+                                self._current_ra_rate = 0 * u.arcsec / u.s
+                                self._current_dec_rate = 0 * u.arcsec / u.s
+
+                                # We must manually clear the non-sidereal rates to work around
+                                # GetRaDec returning the wrong values
+                                self._telescope.SetTracking(0, 0, 0, 0)
+                                self._current_nonsidereal_tracking = False
+
+                        self._telescope.SetTracking(1 if isinstance(tracking, TrackingSidereal) else 0, 1, 0, 0)
 
                 except Exception as e:
                     print('Failed to set tracking')
@@ -388,13 +420,9 @@ class TelescopeDaemon:
 
                     if desired_pier_side != self._current_pier_side:
                         print('Stopped tracking on wrong side of pier')
-                        # Stop tracking immediately
-                        self.__tel_clear_custom_tracking(False)
-
-                        # Clean up remaining state on the next loop
+                        # Skip the sleep so we can immediately stop tracking
                         self._requested_stop = True
-                        self._requested_tracking = False
-                        self._requested_tracking_rates = None
+                        continue
 
             time.sleep(TELSTAT_QUERY_DELAY)
 
@@ -464,7 +492,6 @@ class TelescopeDaemon:
             with self._initialize_shutdown_condition:
                 self._requested_active = False
                 self._requested_stop = True
-                self._requested_tracking = False
                 self._initialize_shutdown_condition.wait(SHUTDOWN_TIMEOUT)
 
             if self._state != TelescopeState.Disabled:
@@ -479,37 +506,27 @@ class TelescopeDaemon:
             return CommandStatus.TelescopeNotEnabled
 
         self._requested_stop = True
-        self._requested_tracking = False
-        self._requested_tracking_rates = None
 
         return CommandStatus.Succeeded
 
-    def __slew(self, coordinates, tracking=None, offset=False, altaz=False):
+    def __slew(self, coordinates, tracking, altaz=False):
         """Called from a client thread to queue a slew command
            and block until it completes.
 
            coordinates is a tuple of (ra, dec) if altaz = False
            or (alt, az) if altaz = True
 
-           tracking should be set to False to disable sidereal tracking after the slew
+           tracking should be an instance of TrackingStationary, TrackingSidereal, or TrackingNonSidereal
 
            Returns a CommandStatus with a result code (Succeeded, SlewAborted,
                                                        CoordinatesOutsideLimits)
         """
         with self._slew_lock:
-            if tracking is not None:
-                self._requested_tracking = tracking
-
-            if offset:
-                if altaz:
-                    slew_type = RequestedSlew.HorizonOffsetFirst
-                else:
-                    slew_type = RequestedSlew.EquatorialOffsetFirst
+            self._requested_tracking = tracking
+            if altaz:
+                slew_type = RequestedSlew.Horizon
             else:
-                if altaz:
-                    slew_type = RequestedSlew.Horizon
-                else:
-                    slew_type = RequestedSlew.Equatorial
+                slew_type = RequestedSlew.Equatorial
             self._requested_slew = RequestedSlew(coordinates[0], coordinates[1], slew_type)
 
         with self._slew_condition:
@@ -523,6 +540,36 @@ class TelescopeDaemon:
             return CommandStatus.CoordinatesOutsideLimits
         return CommandStatus.SlewAborted if self._slew_aborted else CommandStatus.Succeeded
 
+    def __offset(self, coordinates, altaz=False):
+        """Called from a client thread to queue an offset command
+           and block until it completes.
+
+           coordinates is a tuple of (dra, ddec) if altaz = False
+           or (dalt, daz) if altaz = True
+
+           Returns a CommandStatus with a result code (Succeeded, SlewAborted,
+                                                       CoordinatesOutsideLimits)
+        """
+        with self._slew_lock:
+            if altaz:
+                slew_type = RequestedSlew.HorizonOffsetFirst
+            else:
+                slew_type = RequestedSlew.EquatorialOffsetFirst
+
+            self._requested_slew = RequestedSlew(coordinates[0], coordinates[1], slew_type)
+
+        with self._slew_condition:
+            while True:
+                self._slew_condition.wait(1)
+
+                if self._state != TelescopeState.Slewing and self._requested_slew is None:
+                    break
+
+        if self._slew_outside_limits:
+            return CommandStatus.CoordinatesOutsideLimits
+
+        return CommandStatus.SlewAborted if self._slew_aborted else CommandStatus.Succeeded
+
     @Pyro4.expose
     def slew_altaz(self, alt_radians, az_radians):
         """Moves the telescope to a target"""
@@ -533,10 +580,7 @@ class TelescopeDaemon:
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
 
-            with self._slew_lock:
-                self._requested_tracking_rates = None
-
-            return self.__slew((alt_radians * u.rad, az_radians * u.rad), tracking=False, altaz=True)
+            return self.__slew((alt_radians * u.rad, az_radians * u.rad), TrackingStationary(), altaz=True)
 
     @Pyro4.expose
     def track_altaz(self, alt_radians, az_radians):
@@ -548,10 +592,7 @@ class TelescopeDaemon:
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
 
-            with self._slew_lock:
-                self._requested_tracking_rates = None
-
-            return self.__slew((alt_radians * u.rad, az_radians * u.rad), tracking=True, altaz=True)
+            return self.__slew((alt_radians * u.rad, az_radians * u.rad), TrackingSidereal(), altaz=True)
 
     @Pyro4.expose
     def slew_radec(self, ra_radians, dec_radians):
@@ -563,10 +604,7 @@ class TelescopeDaemon:
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
 
-            with self._slew_lock:
-                self._requested_tracking_rates = None
-
-            return self.__slew((ra_radians * u.rad, dec_radians * u.rad), tracking=False)
+            return self.__slew((ra_radians * u.rad, dec_radians * u.rad), TrackingStationary())
 
     @Pyro4.expose
     def track_radec(self, ra_radians, dec_radians, tracking_rates_arcsec_per_sec=None):
@@ -578,15 +616,14 @@ class TelescopeDaemon:
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
 
-            with self._slew_lock:
-                if tracking_rates_arcsec_per_sec and len(tracking_rates_arcsec_per_sec) == 2:
-                    self._requested_tracking_rates = (
-                        tracking_rates_arcsec_per_sec[0] * u.arcsec / u.s,
-                        tracking_rates_arcsec_per_sec[1] * u.arcsec / u.s)
-                else:
-                    self._requested_tracking_rates = None
+            if tracking_rates_arcsec_per_sec and len(tracking_rates_arcsec_per_sec) == 2:
+                tracking = TrackingNonSidereal(
+                    tracking_rates_arcsec_per_sec[0] * u.arcsec / u.s,
+                    tracking_rates_arcsec_per_sec[1] * u.arcsec / u.s)
+            else:
+                tracking = TrackingSidereal()
 
-            return self.__slew((ra_radians * u.rad, dec_radians * u.rad), tracking=True)
+            return self.__slew((ra_radians * u.rad, dec_radians * u.rad), tracking)
 
     @Pyro4.expose
     def offset_radec(self, ra_delta_radians, dec_delta_radians):
@@ -598,8 +635,7 @@ class TelescopeDaemon:
             if self._state < TelescopeState.Stopped:
                 return CommandStatus.TelescopeNotEnabled
 
-            return self.__slew((ra_delta_radians * u.rad, dec_delta_radians * u.rad), offset=True)
-
+            return self.__offset((ra_delta_radians * u.rad, dec_delta_radians * u.rad))
 
     @Pyro4.expose
     def track_rates(self, ra_arcsec_per_sec, dec_arcsec_per_sec):
@@ -612,10 +648,10 @@ class TelescopeDaemon:
                 return CommandStatus.TelescopeNotEnabled
 
             with self._slew_lock:
-                self._requested_tracking = True
-                self._requested_tracking_rates = (
+                self._requested_tracking = TrackingNonSidereal(
                     ra_arcsec_per_sec * u.arcsec / u.s,
                     dec_arcsec_per_sec * u.arcsec / u.s)
+
         return CommandStatus.Succeeded
 
     @Pyro4.expose
@@ -629,8 +665,8 @@ class TelescopeDaemon:
                 return CommandStatus.TelescopeNotEnabled
 
             with self._slew_lock:
-                self._requested_tracking = True
-                self._requested_tracking_rates = None
+                self._requested_tracking = TrackingSidereal()
+
         return CommandStatus.Succeeded
 
     # pylint: disable=no-self-use
